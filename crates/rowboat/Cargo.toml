@@ -1,0 +1,21 @@
+[package]
+name = "rowboat"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+rowboat-core.workspace = true
+rowboat-services.workspace = true
+rowboat-admin = { path = "../rowboat-admin" }
+anyhow.workspace = true
+serde.workspace = true
+serde_json = { workspace = true, features = ["arbitrary_precision"] }
+tokio.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+tempfile = "3"
+libc = "0.2"
+gpui-kit = { version = "=0.7.3", default-features = false }
+gpui-omarchy = "=0.2.1"
+lsp-types = "=0.97.0"

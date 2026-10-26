@@ -1,0 +1,447 @@
+//! App-data-only preferences and scoped keymap replacement; native editing keys stay owned by inputs.
+use crate::{
+    app::*,
+    forms,
+    view::{action, column, label, row},
+};
+use gpui_kit::{
+    base::input::{InputEvent, InputState},
+    prelude::*,
+    *,
+};
+use gpui_omarchy::{self as ui, ActiveTheme};
+use rowboat_services::Preferences as AppPreferences;
+use std::collections::BTreeMap;
+
+pub struct PreferencesForm {
+    original: AppPreferences,
+    theme: Entity<ui::ChoiceState>,
+    fields: BTreeMap<&'static str, Entity<InputState>>,
+    shortcuts: BTreeMap<String, Entity<InputState>>,
+    _subscriptions: Vec<Subscription>,
+}
+fn action_for(id: &str) -> Option<Box<dyn Action>> {
+    Some(match id {
+        "run_query" => Box::new(RunQuery),
+        "new_query" => Box::new(NewQuery),
+        "format_query" => Box::new(FormatQuery),
+        "quick_open" => Box::new(QuickOpen),
+        "new_connection" => Box::new(NewConnection),
+        "copy_cell" => Box::new(CopyCell),
+        "complete_sql" => Box::new(CompleteSql),
+        "close_query" => Box::new(CloseQuery),
+        "command_palette" => Box::new(CommandPalette),
+        "preferences" => Box::new(ShowPreferences),
+        _ => return None,
+    })
+}
+fn shortcut_bindings(
+    previous: &BTreeMap<String, String>,
+    next: &BTreeMap<String, String>,
+) -> anyhow::Result<Vec<KeyBinding>> {
+    let mut bindings = vec![];
+    for context in ["Rowboat", "Rowboat > Input", "RowboatSqlEditor > Input"] {
+        let predicate = Some(std::rc::Rc::new(KeyBindingContextPredicate::parse(
+            context,
+        )?));
+        for (id, chord) in previous {
+            let action =
+                action_for(id).ok_or_else(|| anyhow::anyhow!("Unknown shortcut action: {id}"))?;
+            bindings.push(KeyBinding::load(
+                chord,
+                Box::new(Unbind(action.name().into())),
+                predicate.clone(),
+                false,
+                None,
+                &DummyKeyboardMapper,
+            )?);
+        }
+        for (id, chord) in next {
+            let action =
+                action_for(id).ok_or_else(|| anyhow::anyhow!("Unknown shortcut action: {id}"))?;
+            bindings.push(KeyBinding::load(
+                chord,
+                action,
+                predicate.clone(),
+                false,
+                None,
+                &DummyKeyboardMapper,
+            )?);
+        }
+    }
+    Ok(bindings)
+}
+pub fn bind_shortcuts(
+    previous: &BTreeMap<String, String>,
+    preferences: &AppPreferences,
+    cx: &mut App,
+) -> anyhow::Result<BTreeMap<String, String>> {
+    preferences.validate()?;
+    let next = preferences.effective_shortcuts()?;
+    if previous != &next {
+        cx.bind_keys(shortcut_bindings(previous, &next)?);
+    }
+    Ok(next)
+}
+impl Workbench {
+    pub fn shortcut_label(&self, id: &str) -> String {
+        self.state
+            .preferences
+            .effective_shortcuts()
+            .ok()
+            .and_then(|map| map.get(id).cloned())
+            .unwrap_or_default()
+    }
+    pub fn show_preferences(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.has_extension_dialog() {
+            return;
+        }
+        if self.close_requested
+            || self.form.is_some()
+            || self.has_row_draft()
+            || self.transfer.is_some()
+            || self.management.is_some()
+            || self.grid.inspector.is_some()
+            || self.url_input.is_some()
+            || self.advanced.designer.is_some()
+        {
+            return;
+        }
+        self.quick_open = false;
+        self.error = None;
+        let original = self.shared.borrow().state.preferences.clone();
+        let fields = [
+            ("editor_font_size", original.editor_font_size.to_string()),
+            ("grid_font_size", original.grid_font_size.to_string()),
+            ("grid_row_height", original.grid_row_height.to_string()),
+            ("page_size", original.page_size.to_string()),
+            ("query_row_limit", original.query_row_limit.to_string()),
+            (
+                "query_result_limit_mib",
+                original.query_result_limit_mib.to_string(),
+            ),
+        ]
+        .into_iter()
+        .map(|(name, value)| (name, forms::input(value, "Value", window, cx)))
+        .collect::<BTreeMap<_, _>>();
+        let shortcuts = rowboat_services::default_shortcuts()
+            .into_keys()
+            .map(|id| {
+                let value = original.shortcuts.get(&id).cloned().unwrap_or_default();
+                (id, forms::input(value, "Default (leave empty)", window, cx))
+            })
+            .collect::<BTreeMap<_, _>>();
+        let mut subscriptions: Vec<_> = fields
+            .values()
+            .chain(shortcuts.values())
+            .map(|input| cx.subscribe(input, |_, _, _: &InputEvent, cx| cx.notify()))
+            .collect();
+        let mut items = vec![ui::ChoiceItem::new("system", "System (default)")];
+        items.extend(
+            crate::theme_controller::PALETTES
+                .iter()
+                .map(|p| ui::ChoiceItem::new(p.id, p.name)),
+        );
+        let selected = items
+            .iter()
+            .position(|item| item.value.as_ref() == original.theme)
+            .unwrap_or_else(|| {
+                items.push(ui::ChoiceItem::new(
+                    original.theme.clone(),
+                    format!("Unavailable: {} (using System)", original.theme),
+                ));
+                items.len() - 1
+            });
+        let theme = cx.new(|cx| {
+            ui::ChoiceState::new(items, window, cx)
+                .label("Application theme")
+                .default_selected(selected)
+        });
+        subscriptions.push(cx.observe(&theme, |_, _, cx| cx.notify()));
+        self.preferences_form = Some(PreferencesForm {
+            original,
+            theme,
+            fields,
+            shortcuts,
+            _subscriptions: subscriptions,
+        });
+        window.focus(&self.focus, cx);
+        cx.notify();
+    }
+    pub fn dismiss_preferences(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if self.preferences_form.take().is_none() {
+            return false;
+        }
+        // A focused input disappears with the form. Restore the Rowboat shortcut context.
+        window.focus(&self.focus, cx);
+        cx.notify();
+        true
+    }
+    pub(crate) fn preferences_theme_open(&self, cx: &App) -> bool {
+        self.preferences_form
+            .as_ref()
+            .is_some_and(|f| f.theme.read(cx).is_open())
+    }
+    fn save_preferences(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let outcome = (|| {
+            let form = self
+                .preferences_form
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("No preferences draft"))?;
+            let shared = self.shared.borrow();
+            anyhow::ensure!(
+                shared.writable,
+                "App data is not writable; preferences were not saved"
+            );
+            anyhow::ensure!(
+                serde_json::to_value(&form.original)?
+                    == serde_json::to_value(&shared.state.preferences)?,
+                "Preferences changed in another workspace. Reopen this dialog before editing."
+            );
+            let value = |name| form.fields[name].read(cx).value().trim().to_string();
+            let mut next = form.original.clone();
+            next.theme = form
+                .theme
+                .read(cx)
+                .selected()
+                .ok_or_else(|| anyhow::anyhow!("Choose an application theme"))?
+                .value
+                .to_string();
+            next.editor_font_size = value("editor_font_size").parse()?;
+            next.grid_font_size = value("grid_font_size").parse()?;
+            next.grid_row_height = value("grid_row_height").parse()?;
+            next.page_size = value("page_size").parse()?;
+            next.query_row_limit = value("query_row_limit").parse()?;
+            next.query_result_limit_mib = value("query_result_limit_mib").parse()?;
+            next.shortcuts.clear();
+            for (id, input) in &form.shortcuts {
+                let chord = input.read(cx).value();
+                if !chord.trim().is_empty() {
+                    next.shortcuts.insert(
+                        id.clone(),
+                        rowboat_services::canonical_key_chord(chord.trim())?,
+                    );
+                }
+            }
+            next.validate()?;
+            let _ = shortcut_bindings(&BTreeMap::new(), &next.effective_shortcuts()?)?;
+            Ok::<_, anyhow::Error>(next)
+        })();
+        match outcome {
+            Ok(preferences) => {
+                let theme = preferences.theme.clone();
+                self.edit_state(|state| state.preferences = preferences);
+                crate::theme_controller::set_choice(&theme, cx);
+                self.dismiss_preferences(window, cx);
+                self.status="Preferences saved · theme and fonts apply live; limits apply to the next execution / page refresh".into();
+            }
+            Err(e) => self.fail(format!("Preferences: {e:#}")),
+        }
+        cx.notify();
+    }
+    pub fn render_preferences(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let form = self.preferences_form.as_ref().unwrap();
+        let theme = cx.omarchy().clone();
+        let mut body = column()
+            .p_4()
+            .gap_3()
+            .text_size(px(13.))
+            .child(
+                row()
+                    .child(ui::icon(ui::IconName::Settings).text_color(theme.accent))
+                    .child(div().text_size(px(16.)).font_weight(FontWeight::SEMIBOLD).child("Application preferences"))
+                    .child(div().flex_1())
+                    .child(action(
+                        "close-preferences",
+                        "Cancel",
+                        false,
+                        true,
+                        cx,
+                        |s, w, cx| {
+                            s.dismiss_preferences(w, cx);
+                        },
+                    ).debug_selector(|| "close-preferences".into())),
+            )
+            .child(label(
+                "Stored in Rowboat's private app data. Preferences apply across retained workspaces.",
+                cx,
+            ))
+            .child(column().gap_2().pt_2()
+                .child(div().font_weight(FontWeight::SEMIBOLD).child("Appearance"))
+                .child(div().w_full().debug_selector(|| "preferences-theme".into())
+                    .child(ui::select("preferences-theme-select", &form.theme, window, cx)))
+                .child(label("System follows the current Omarchy palette when available, otherwise your desktop's light/dark appearance. Embedded themes work on every machine. Changes apply on Save.", cx))
+                .child(label(crate::theme_controller::description(cx), cx)));
+        for (id, title, hint) in [
+            ("editor_font_size", "SQL editor font size", "10–32 px"),
+            ("grid_font_size", "Result grid font size", "10–32 px"),
+            ("grid_row_height", "Minimum grid row height", "20–64 px"),
+            ("page_size", "Table page size", "1–10,000 rows"),
+            ("query_row_limit", "Query rows per result", "1–100,000 rows"),
+            (
+                "query_result_limit_mib",
+                "Retained result budget",
+                "16–512 MiB per connection workspace",
+            ),
+        ] {
+            if id == "editor_font_size" || id == "page_size" {
+                body = body.child(
+                    column()
+                        .gap_1()
+                        .pt_4()
+                        .pb_2()
+                        .border_t_1()
+                        .border_color(theme.divider())
+                        .child(div().font_weight(FontWeight::SEMIBOLD).child(
+                            if id == "editor_font_size" {
+                                "Typography"
+                            } else {
+                                "Results"
+                            },
+                        ))
+                        .child(label(
+                            if id == "editor_font_size" {
+                                "Tune editor text and grid density. Changes apply live."
+                            } else {
+                                "Limits apply to the next query run or table refresh."
+                            },
+                            cx,
+                        )),
+                );
+            }
+            body = body.child(
+                row()
+                    .flex_wrap()
+                    .gap_3()
+                    .child(
+                        column()
+                            .flex_1()
+                            .min_w(px(220.))
+                            .gap_1()
+                            .child(title)
+                            .child(label(hint, cx)),
+                    )
+                    .child(
+                        div()
+                            .w(px(180.))
+                            .max_w_full()
+                            .debug_selector(move || id.into())
+                            .child(ui::input(
+                                SharedString::from(id),
+                                &form.fields[id],
+                                window,
+                                cx,
+                            )),
+                    ),
+            );
+        }
+        body = body.child(label(
+            "Shared by retained tabs, table results, pins and comparison work in each workspace. Query streams use half the remaining allowance to leave room for delivery. Editing also has a 64 MiB proof limit. This is a retained-data budget; total process RAM is higher.",
+            cx,
+        ));
+        body = body.child(
+            column().gap_1().pt_4().pb_2().border_t_1().border_color(theme.divider())
+                .child(div().font_weight(FontWeight::SEMIBOLD).child("Keyboard"))
+                .child(label("Leave an override empty to use its default. Text editing, clipboard and undo shortcuts stay protected.", cx)),
+        );
+        for (id, default) in rowboat_services::default_shortcuts() {
+            let title = match id.as_str() {
+                "run_query" => "Run query",
+                "new_query" => "New query tab",
+                "format_query" => "Format SQL",
+                "quick_open" => "Quick open",
+                "new_connection" => "New connection",
+                "copy_cell" => "Copy selected cell",
+                "complete_sql" => "Show SQL completions",
+                "close_query" => "Close query tab",
+                "command_palette" => "Open command palette",
+                "preferences" => "Open preferences",
+                _ => "Shortcut",
+            };
+            body = body.child(
+                row()
+                    .flex_wrap()
+                    .gap_3()
+                    .child(
+                        column()
+                            .flex_1()
+                            .min_w(px(220.))
+                            .gap_1()
+                            .child(title)
+                            .child(label(format!("Default: {default}"), cx)),
+                    )
+                    .child(div().w(px(230.)).max_w_full().child(ui::input(
+                        SharedString::from(format!("shortcut-{id}")),
+                        &form.shortcuts[&id],
+                        window,
+                        cx,
+                    ))),
+            );
+        }
+        let mut footer = column()
+            .gap_2()
+            .p_4()
+            .bg(theme.surface)
+            .border_t_1()
+            .border_color(theme.divider());
+        if let Some(error) = &self.error {
+            footer = footer.child(
+                div()
+                    .text_size(px(12.))
+                    .text_color(theme.danger)
+                    .child(error.clone()),
+            );
+        }
+        footer = footer.child(
+            row().flex_wrap().child(div().flex_1()).child(
+                action(
+                    "save-preferences",
+                    "Save preferences",
+                    true,
+                    self.loaded,
+                    cx,
+                    |s, w, cx| s.save_preferences(w, cx),
+                )
+                .debug_selector(|| "save-preferences".into()),
+            ),
+        );
+        self.modal(
+            column()
+                .w(px(720.).min(window.viewport_size().width - px(48.)))
+                // Leave room for workspace chrome, the modal focus strip and margins.
+                .max_h(window.viewport_size().height - px(136.))
+                .child(
+                    div()
+                        .id("preferences-scroll")
+                        .min_h_0()
+                        .overflow_y_scroll()
+                        .child(body),
+                )
+                .child(footer.flex_shrink_0())
+                .into_any_element(),
+            cx,
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::shortcut_bindings;
+    use crate::app::{CopyCell, Dismiss, RunQuery};
+    use gpui_kit::{KeyBinding, Keymap};
+    use std::collections::BTreeMap;
+    #[test]
+    fn changing_shortcuts_unbinds_only_prior_rowboat_actions_and_preserves_native_copy() {
+        let old = rowboat_services::default_shortcuts();
+        let mut keymap = Keymap::new(vec![KeyBinding::new("ctrl-c", Dismiss, Some("Input"))]);
+        keymap.add_bindings(shortcut_bindings(&BTreeMap::new(), &old).unwrap());
+        let mut next = old.clone();
+        next.insert("run_query".into(), "alt-r".into());
+        keymap.add_bindings(shortcut_bindings(&old, &next).unwrap());
+        let bindings = keymap.bindings_for_action(&RunQuery).collect::<Vec<_>>();
+        assert_eq!(bindings.len(), 3);
+        assert!(bindings.iter().all(|b| b.keystrokes()[0].key() == "r"));
+        assert_eq!(keymap.bindings_for_action(&Dismiss).count(), 1);
+        assert_eq!(keymap.bindings_for_action(&CopyCell).count(), 3);
+    }
+}

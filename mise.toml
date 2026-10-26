@@ -1,0 +1,69 @@
+[tools]
+rust = { version = "1.99.0", profile = "minimal", components = ["rustfmt", "clippy"] }
+shellcheck = "0.11.0"
+actionlint = "1.7.12"
+gitleaks = "8.30.1"
+
+[tasks.dev]
+run = "cargo run -p rowboat"
+
+[tasks.build]
+run = "cargo build -p rowboat -p rowboat-cli"
+
+[tasks.release]
+run = "cargo build --release -p rowboat -p rowboat-cli"
+
+[tasks.package]
+run = "bash scripts/package.sh"
+
+[tasks."package:test"]
+description = "Smoke-test an extracted archive and a temporary-prefix installation"
+run = "bash scripts/test-package.sh"
+
+[tasks."test:distribution"]
+description = "Exercise mise against a local release fixture; requires ROWBOAT_DISTRIBUTION_ARCHIVE"
+run = "cargo test --locked -p rowboat-tests --features distribution-tests --test distribution"
+
+[tasks.check]
+run = "cargo check --workspace --all-targets"
+
+[tasks.lint]
+run = "cargo clippy --workspace --all-targets -- -D warnings"
+
+[tasks."lint:distribution"]
+run = ["shellcheck scripts/package.sh packaging/install.sh scripts/test-package.sh scripts/test-gui-startup.sh", "actionlint .github/workflows/*.yml"]
+
+[tasks."audit:secrets"]
+description = "Scan staged changes and Git history, redacting any findings"
+run = ["gitleaks git --staged --redact --no-banner", "gitleaks git --log-opts=--all --redact --no-banner"]
+
+[tasks.test]
+run = "cargo test --workspace"
+
+[tasks.fmt]
+run = "cargo fmt --all -- --check"
+
+[tasks."db:up"]
+run = "bash scripts/test-databases.sh up"
+
+[tasks."db:down"]
+run = ["bash scripts/test-ssh-databases.sh down", "bash scripts/test-tls-databases.sh down", "bash scripts/test-databases.sh down"]
+
+[tasks."db:tls:up"]
+run = "bash scripts/test-tls-databases.sh up"
+
+[tasks."db:tls:down"]
+run = "bash scripts/test-tls-databases.sh down"
+
+[tasks."db:ssh:up"]
+run = "bash scripts/test-ssh-databases.sh up"
+
+[tasks."db:ssh:down"]
+run = "bash scripts/test-ssh-databases.sh down"
+
+[tasks."test:integration"]
+depends = ["db:up", "db:tls:up", "db:ssh:up"]
+run = "cargo test --workspace -- --ignored --test-threads=1"
+
+[tasks.demo]
+run = "bash scripts/demo.sh"

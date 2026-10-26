@@ -1,0 +1,12 @@
+[package]
+name = "rowboat-admin"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+rowboat-core.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json = { workspace = true, features = ["arbitrary_precision"] }
+tokio.workspace = true

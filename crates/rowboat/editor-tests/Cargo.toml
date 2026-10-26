@@ -1,0 +1,28 @@
+[package]
+name = "rowboat-editor-regressions"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# Isolate test-platform feature/lock resolution from the application's dependency graph.
+[workspace]
+
+[lib]
+path = "tests.rs"
+
+[dependencies]
+gpui-kit = { version = "=0.7.3", default-features = false }
+gpui-omarchy = "=0.2.1"
+gpui-test = { package = "gpui-pre", version = "=0.3.9", features = ["test-support"] }
+rowboat-core = { path = "../../rowboat-core" }
+rowboat-services = { path = "../../rowboat-services" }
+rowboat-admin = { path = "../../rowboat-admin" }
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["arbitrary_precision"] }
+tokio = { version = "1", features = ["full"] }
+uuid = { version = "1", features = ["v4"] }
+chrono = "0.4"
+tempfile = "3"
+libc = "0.2"
+lsp-types = "=0.97.0"

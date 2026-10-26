@@ -1,0 +1,30 @@
+[package]
+name = "rowboat-tests"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+distribution-tests = []
+
+[[test]]
+name = "distribution"
+path = "tests/distribution.rs"
+required-features = ["distribution-tests"]
+
+[dependencies]
+anyhow.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+wayland-client = "0.31"
+wayland-protocols-wlr = { version = "0.3", features = ["client"] }
+
+[dev-dependencies]
+rowboat-core.workspace = true
+rowboat-services.workspace = true
+rowboat-admin = { path = "../rowboat-admin" }
+tokio.workspace = true
+anyhow.workspace = true
+serde_json.workspace = true
+tempfile = "3"

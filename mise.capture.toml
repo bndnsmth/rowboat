@@ -1,0 +1,3 @@
+# Optional runtime for regenerating launch screenshots; not needed by the app.
+[tools]
+python = "3.14.0"

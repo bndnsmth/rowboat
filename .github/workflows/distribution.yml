@@ -1,0 +1,113 @@
+name: Native distributions
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: distribution-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_BUILD_JOBS: 2
+  MISE_YES: '1'
+
+jobs:
+  linux:
+    name: Linux / ${{ matrix.runner }} / glibc 2.35
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+    runs-on: ${{ matrix.runner }}
+    # Same baseline for both architectures, not the rolling runner's libc.
+    container: ubuntu:22.04
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    env:
+      DEBIAN_FRONTEND: noninteractive
+      # The fresh container has no keyring or Rowboat profiles. Unit tests that
+      # exercise credentials use their own disposable helper/session fixtures.
+      DBUS_SESSION_BUS_ADDRESS: unix:path=/nonexistent/rowboat-ci
+    steps:
+      - name: Install native build and desktop dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            build-essential ca-certificates clang cmake curl git pkg-config xz-utils \
+            libfontconfig1-dev libfreetype6-dev libglib2.0-dev \
+            libx11-xcb-dev libxcb1-dev libxcb-xkb-dev libxkbcommon-dev \
+            libxkbcommon-x11-dev libwayland-dev libvulkan-dev \
+            dbus-x11 desktop-file-utils fonts-dejavu-core mesa-vulkan-drivers xauth xvfb
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/build
+        with:
+          target: ${{ matrix.target }}
+
+  macos:
+    name: macOS / ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+          - runner: macos-15
+            target: aarch64-apple-darwin
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    env:
+      MACOSX_DEPLOYMENT_TARGET: '13.0'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/build
+        with:
+          target: ${{ matrix.target }}
+
+  draft-release:
+    name: Assemble reviewed release draft
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [linux, macos]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: rowboat-*
+          merge-multiple: true
+          path: artifacts
+      - name: Verify all four archives before attaching
+        shell: bash
+        working-directory: artifacts
+        run: |
+          archives=(*.tar.gz)
+          checksums=(*.sha256)
+          [[ ${#archives[@]} == 4 && ${#checksums[@]} == 4 ]]
+          sha256sum --check -- *.sha256
+      - name: Create draft, never automatically publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          gh release create "$RELEASE_TAG" artifacts/* \
+            --draft --verify-tag --title "Rowboat $RELEASE_TAG" --generate-notes

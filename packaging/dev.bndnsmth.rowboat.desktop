@@ -1,0 +1,13 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Rowboat
+GenericName=Database Workbench
+Comment=Native PostgreSQL, MySQL and SQLite workbench
+Exec=rowboat
+Icon=dev.bndnsmth.rowboat
+Terminal=false
+Categories=Development;Database;
+Keywords=SQL;PostgreSQL;MySQL;SQLite;
+StartupWMClass=dev.bndnsmth.rowboat
+StartupNotify=true

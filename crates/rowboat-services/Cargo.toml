@@ -1,0 +1,30 @@
+[package]
+name = "rowboat-services"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+rowboat-core.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json = { workspace = true, features = ["arbitrary_precision"] }
+tokio.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+csv = "1"
+directories = "6"
+sqlformat = "0.3"
+tempfile = "3"
+hex = "0.4"
+libc = "0.2"
+url = "2"
+percent-encoding = "2"
+sha2 = "0.10"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+security-framework = "3.7"
+security-framework-sys = "2.17"
+
+[dev-dependencies]
+libsqlite3-sys = "0.30.1"

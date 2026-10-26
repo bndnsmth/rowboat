@@ -1,0 +1,63 @@
+name: Build and verify native distribution
+description: Use the project mise toolchain, test, package and smoke-test both binaries.
+inputs:
+  target:
+    description: Expected native Rust host triple
+    required: true
+runs:
+  using: composite
+  steps:
+    - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4
+      with:
+        cache: false
+    - name: Verify native toolchain and formatting
+      shell: bash
+      env:
+        EXPECTED_TARGET: ${{ inputs.target }}
+      run: |
+        actual="$(rustc -vV | sed -n 's/^host: //p')"
+        [[ "$actual" == "$EXPECTED_TARGET" ]] || { echo "Expected $EXPECTED_TARGET, got $actual" >&2; exit 1; }
+        cargo fmt --all -- --check
+    - name: Check workspace
+      shell: bash
+      run: cargo check --locked --workspace --all-targets --all-features
+    - name: Strict workspace lint
+      shell: bash
+      run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+    - name: Native workspace tests
+      shell: bash
+      # Finish every test binary to expose all platform-specific failures at once.
+      run: cargo test --locked --workspace --no-fail-fast
+    - name: Verify distribution scripts
+      shell: bash
+      run: |
+        mise run lint:distribution
+        bash -n scripts/package.sh packaging/install.sh scripts/test-package.sh scripts/test-gui-startup.sh
+    - name: Build and package
+      shell: bash
+      run: |
+        export SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
+        if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+          export ROWBOAT_RELEASE_TAG="${GITHUB_REF#refs/tags/}"
+        fi
+        mise run package
+        archives=(.local/dist/*.tar.gz)
+        [[ ${#archives[@]} == 1 ]]
+        bash scripts/test-package.sh "${archives[0]}"
+        ROWBOAT_DISTRIBUTION_ARCHIVE="$PWD/${archives[0]}" mise run test:distribution
+    - name: Native GUI startup on Linux
+      if: runner.os == 'Linux'
+      shell: bash
+      run: dbus-run-session -- xvfb-run -a -s '-screen 0 1280x800x24' bash scripts/test-gui-startup.sh "$PWD/target/release/rowboat"
+    - name: Native GUI startup on macOS
+      if: runner.os == 'macOS'
+      shell: bash
+      run: bash scripts/test-gui-startup.sh "$PWD/target/release/rowboat"
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      with:
+        name: rowboat-${{ runner.os }}-${{ runner.arch }}
+        path: |
+          .local/dist/*.tar.gz
+          .local/dist/*.sha256
+        include-hidden-files: true
+        if-no-files-found: error
