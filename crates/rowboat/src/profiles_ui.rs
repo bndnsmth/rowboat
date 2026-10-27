@@ -36,6 +36,95 @@ pub enum ProfileEvent {
     Exported(Result<Option<String>, String>),
 }
 impl Workbench {
+    pub(crate) fn connection_context_label(&self) -> String {
+        let Some(profile) = &self.profile else {
+            return "No active database target".into();
+        };
+        let mut target = if profile.engine == rowboat_core::Engine::Sqlite {
+            profile
+                .file
+                .as_ref()
+                .map(|f| f.path.display().to_string())
+                .unwrap_or_else(|| "No database file".into())
+        } else {
+            let host = if profile.host.contains(':') {
+                format!("[{}]", profile.host)
+            } else {
+                profile.host.clone()
+            };
+            let database = self
+                .namespace
+                .snapshot
+                .as_ref()
+                .map(|c| c.database.as_str())
+                .unwrap_or(&profile.database);
+            format!("{host}:{} → {database}", profile.port)
+        };
+        if let Some(snapshot) = &self.namespace.snapshot
+            && let Some(schema) = &snapshot.current_schema
+        {
+            target.push_str(&format!(" · SQL schema: {schema}"));
+            if let Some(explorer) = self.namespace_scope().filter(|name| *name != schema) {
+                target.push_str(&format!(" · explorer: {explorer}"));
+            }
+        }
+        if self.database.is_none() {
+            target.push_str(" · DISCONNECTED");
+        } else if !self.namespace.known {
+            target.push_str(" · CONTEXT UNVERIFIED");
+        }
+        target
+    }
+    pub(crate) fn fill_connection_from_url(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.busy || self.close_requested {
+            return false;
+        }
+        let Some(form) = &mut self.form else {
+            return false;
+        };
+        let had_url = !form.url.read(cx).value().trim().is_empty();
+        match form.fill_from_url(window, cx) {
+            Ok(()) => {
+                if had_url {
+                    self.startup_connect = None;
+                    self.status =
+                        "URL parsed · review the fields, then Test, Save or Connect".into();
+                }
+                cx.notify();
+                true
+            }
+            Err(error) => {
+                form.url_error = Some(format!("Cannot parse connection URL: {error}"));
+                form.scroll.set_offset(point(px(0.), px(0.)));
+                form.url.update(cx, |input, cx| input.focus(window, cx));
+                cx.notify();
+                false
+            }
+        }
+    }
+
+    pub(crate) fn paste_connection_url(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.busy || self.close_requested {
+            return;
+        }
+        let Some(form) = &mut self.form else {
+            return;
+        };
+        match cx.read_from_clipboard().and_then(|item| item.text()) {
+            Some(text) => {
+                form.url
+                    .update(cx, |field, cx| field.set_value(text, window, cx));
+                self.fill_connection_from_url(window, cx);
+            }
+            None => form.url_error = Some("The clipboard does not contain a connection URL".into()),
+        }
+        cx.notify();
+    }
+
     pub fn choose_database_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.busy || self.close_requested {
             return;

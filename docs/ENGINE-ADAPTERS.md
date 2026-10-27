@@ -34,11 +34,19 @@ allow later statements in an already-submitted batch to execute. PostgreSQL and
 SQLite retain native interruption. Queued cancelled operations cannot terminate
 the active operation, and retired sessions reject subsequent work without replay.
 
-`Engine::descriptor()` describes connection kind, namespace behavior, dialect,
+`Engine::descriptor()` describes connection kind, namespace behavior, database
+selection (`InSession`, `Reconnect`, or `Unsupported`), dialect,
 object kinds and installed optional tool providers. Provider availability does
 not establish current-user permission. Admin `operation_support` and reviewed
 `DdlPlan::execution_semantics` supply operation-specific behavior; consumers must
 not infer transaction policy from an engine-name comparison.
+
+`Database::database_catalog()` is bounded, connection-affine, and loaded on demand
+separately from `namespace_catalog()`: ordinary query/schema refresh adds no server
+database-list query. Catalog SQL and permission filtering stay in core adapters.
+PostgreSQL database selection reconnects through the normal credential/TLS/tunnel
+services; it is not a `USE` emulation or a schema/search-path change. The GUI keeps
+the old session until the candidate connection and its namespace snapshot succeed.
 
 GUI and CLI completion use `completion_catalog`, `completion_column_names` and
 the verified snapshot API. These are bounded and physical-session-affine. The

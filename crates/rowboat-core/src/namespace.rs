@@ -4,6 +4,12 @@ use super::*;
 use adapters::catalog::namespace_snapshot;
 
 #[derive(Debug, Clone)]
+pub struct DatabaseCatalog {
+    pub database: String,
+    pub databases: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
 pub struct NamespaceCatalog {
     pub(super) completion_proof: Option<super::completion::CompletionProof>,
     /// Actual server database, never the requested explorer namespace.
@@ -30,6 +36,19 @@ impl Drop for NamespaceLease<'_> {
 }
 
 impl Database {
+    /// Discover connectable server databases on demand, independently of schema
+    /// discovery. This never switches context or opens another connection.
+    pub async fn database_catalog(&self) -> Result<DatabaseCatalog> {
+        let mut lease = NamespaceLease {
+            session: self.inner.session.lock().await,
+            armed: true,
+        };
+        let _running = self.metadata_running().await;
+        let result = adapters::catalog::database_snapshot(&mut lease.session.conn).await;
+        lease.armed = result.as_ref().is_err_and(adapters::unknown_outcome);
+        result.context("Loading database catalog")
+    }
+
     /// One bounded, physical-session-locked snapshot. `Some` scopes discovery
     /// only: it never issues USE or changes PostgreSQL search_path.
     pub async fn namespace_catalog(&self, namespace: Option<&str>) -> Result<NamespaceCatalog> {

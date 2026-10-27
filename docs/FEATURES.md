@@ -26,8 +26,8 @@ See [distribution](DISTRIBUTION.md) for the exact requirements and release gates
 | Connections | Saved/grouped profiles, concurrent workspaces, connection testing, portable import/export | No OS deep links or SQLite URI/in-memory profiles |
 | Security | TLS/CA/hostname/mTLS, SSH key/agent tunnels, optional system keyring, password-free profile JSON | Read-only mode is not a replacement for restricted database roles |
 | Workspaces | Independent sessions, transactions, SQL tabs, split editors, multiple windows, SQL/layout recovery | Result sets and live sessions are not recovered; recovered edits require revalidation |
-| Navigation | Schema/object explorer, command palette, MySQL database/PostgreSQL schema contexts, FK navigation | Engine-specific tools depend on catalog permissions and supported object kinds |
-| Grid | Virtualized rows, pagination, filters, column sizing, exact numeric local sorting, rectangular/row selection | Local text sorting does not reproduce database collation |
+| Navigation | Schema/object explorer, command palette, PostgreSQL/MySQL database selection, independent PostgreSQL schema filtering, FK navigation | PostgreSQL database changes require a fresh session; engine-specific tools depend on catalog permissions |
+| Grid | Virtualized rows, visible draggable scrollbars on overflowing axes, pagination, filters, column sizing, exact numeric local sorting, rectangular/row selection | Local text sorting does not reproduce database collation |
 | Row editing | Insert, duplicate, update/delete, NULL/binary/multiline values, paste/fill, SQL review and explicit Apply | Complete original primary keys and optimistic conflict checks are required |
 | Query-result editing | Explicit editing run for supported single-table direct projections, aliases and complete keys | Update-only; no joins, CTEs, expressions, temporary sources or caller transactions |
 | SQL editor | Highlighting, token-aware formatting, named parameters, snippets/tabstops, contextual completion | No general semantic SQL validation or correlated/LATERAL/type inference |
@@ -42,6 +42,33 @@ See [distribution](DISTRIBUTION.md) for the exact requirements and release gates
 Ordinary Run does not prepare editing metadata or replay SQL. Close never applies
 database edits. SQL recovery does not automatically save a named query or an SQL
 file. Unstaged form input and parameter values are not recoverable.
+
+With no workspace open in the main window, the searchable Connections browser is
+the default, including fresh startup and closing/moving the last main workspace.
+Open SQL workspaces still restore; archived drafts reopen only on request. Browsing
+alone creates no workspace or database session. Recovery close guards and live
+satellite-window actions remain available from this empty-main-window state.
+
+Connection forms accept pasted PostgreSQL/MySQL URLs, detect the engine and fill
+host/port/database/user/password/TLS fields for review. Passwords remain memory-only
+unless Remember is explicitly enabled. URL import preserves read-only and SSH
+settings; malformed or unsupported URLs leave the existing fields unchanged.
+Connection forms provide inline field validation/focus, actionable credential-free
+connection guidance, and draft-bound green/red test outlines with prominent result
+banners. The workspace header keeps the live target and read-only policy visible;
+PostgreSQL SQL schema and explorer filter are not conflated. Native Linux Wayland
+rendering has been exercised with isolated SQLite data; macOS interaction and
+Keychain/SSH/TLS native acceptance still require a supported machine.
+
+PostgreSQL's database and schema selectors are separate. Database discovery is
+on-demand and lists non-template, connectable databases with CONNECT permission.
+A database switch verifies the old transaction state and establishes a new
+connection before replacing the old one. Failed switches retain the old session;
+successful switches retain SQL buffers and labeled results, invalidate edit proofs,
+and do not replay SQL or change the saved profile's default database. Session-local
+settings and temporary objects do not transfer. Opening a database in a separate
+workspace instead retains both physical sessions. Live disposable PostgreSQL/MySQL
+and headless GUI regressions cover these flows; native visual acceptance remains separate.
 
 ## Engine-specific tools
 

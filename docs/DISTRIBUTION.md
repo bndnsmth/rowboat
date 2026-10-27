@@ -33,6 +33,13 @@ SQL assets and palettes are embedded. No developer checkout, user profiles,
 passwords, query history or private themes are packaged. Native library mappings
 are recorded in `docs/*-libraries.txt`.
 
+Release builds use Cargo's `strip = "symbols"` for both executables on Linux and
+macOS. This removes ordinary symbol tables as well as debug information, reducing
+installed sizes without removing symbols required for dynamic linking. macOS
+bundle signing happens after the stripped executable is packaged. Release crash
+backtraces can be less informative; the current workflow does not retain separate
+matching debug-symbol artifacts.
+
 ## Install using mise
 
 Install **both `rowboat` and `rowboatctl`** from the

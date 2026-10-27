@@ -429,17 +429,25 @@ impl Workbench {
     pub fn compact_header(&self, cx: &mut Context<Self>) -> AnyElement {
         let t = cx.omarchy();
         let connected = self.database.is_some();
-        let target = self
-            .profile
-            .as_ref()
-            .map(crate::profiles_ui::connection_target);
+        let target = self.connection_context_label();
         let name = self
             .profile
             .as_ref()
-            .map(|p| format!("{}  /  {}", p.name, p.engine.descriptor().name))
+            .map(|p| {
+                format!(
+                    "{}{}  /  {}",
+                    if p.group.is_empty() {
+                        String::new()
+                    } else {
+                        format!("{} · ", p.group)
+                    },
+                    p.name,
+                    p.engine.descriptor().name
+                )
+            })
             .unwrap_or_else(|| "No connection".into());
         row()
-            .h(px(36.))
+            .h(px(48.))
             .px_3()
             .flex_shrink_0()
             .bg(t.surface.opacity(1.))
@@ -447,22 +455,29 @@ impl Workbench {
             .border_color(t.divider())
             .child(icon(ui::IconName::Database).text_color(t.secondary))
             .child(
-                div()
+                crate::view::column()
                     .id("connection-target")
                     .flex_1()
                     .min_w_0()
-                    .truncate()
-                    .text_size(px(12.))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .child(name)
-                    .map(|label| {
-                        if let Some(target) = target {
-                            ui::with_tooltip(label, target.file_path.unwrap_or(target.compact))
-                                .into_any_element()
-                        } else {
-                            label.into_any_element()
-                        }
-                    }),
+                    .child(ui::with_tooltip(
+                        div()
+                            .id("active-connection-name")
+                            .truncate()
+                            .text_size(px(12.))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(name.clone()),
+                        name,
+                    ))
+                    .child(ui::with_tooltip(
+                        div()
+                            .id("active-connection-context")
+                            .debug_selector(|| "active-connection-context".into())
+                            .truncate()
+                            .text_size(px(11.))
+                            .text_color(t.secondary)
+                            .child(target.clone()),
+                        target,
+                    )),
             )
             .child(
                 row()
@@ -482,7 +497,18 @@ impl Workbench {
                     )),
             )
             .when(self.profile.as_ref().is_some_and(|p| p.read_only), |d| {
-                d.child(label("Read only", cx))
+                d.child(
+                    div()
+                        .px_2()
+                        .py_1()
+                        .flex_shrink_0()
+                        .border_1()
+                        .border_color(t.success.opacity(0.5))
+                        .text_size(px(11.))
+                        .text_color(t.success)
+                        .child("READ ONLY")
+                        .debug_selector(|| "connection-read-only".into()),
+                )
             })
             .when(!self.transaction_known || self.transaction, |d| {
                 d.child(

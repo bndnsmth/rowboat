@@ -798,7 +798,7 @@ impl Workbench {
     }
     pub fn render_results_comparison(
         &mut self,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         if self.results.view == ResultsView::Live {
@@ -816,6 +816,7 @@ impl Workbench {
             .flex_1()
             .overflow_hidden()
             .overflow_y_scroll()
+            .track_scroll(&self.results.viewport_scroll)
             .gap_2()
             .p_2()
             .bg(theme.background)
@@ -1066,13 +1067,40 @@ impl Workbench {
             }
             body = body.child(
                 div()
-                    .id("snapshot-grid-scroll")
-                    .debug_selector(|| "snapshot-grid-scroll".into())
+                    .relative()
                     .w_full()
-                    .min_w_0()
                     .flex_shrink_0()
-                    .overflow_x_scroll()
-                    .child(grid),
+                    .pb(px(12.))
+                    .child(
+                        div()
+                            .id("snapshot-grid-scroll")
+                            .debug_selector(|| "snapshot-grid-scroll".into())
+                            .w_full()
+                            .min_w_0()
+                            .flex_shrink_0()
+                            .overflow_x_scroll()
+                            .track_scroll(&self.results.horizontal_scroll)
+                            .child(grid),
+                    )
+                    .child(
+                        div()
+                            .absolute()
+                            .left_0()
+                            .right_0()
+                            .bottom_0()
+                            .h(px(12.))
+                            .debug_selector(|| "snapshot-scrollbar-x".into())
+                            .child(
+                                ui::scrollbar(
+                                    "snapshot-scroll-x",
+                                    gpui_kit::base::ScrollbarAxis::Horizontal,
+                                    &self.results.horizontal_scroll,
+                                    window,
+                                    cx,
+                                )
+                                .viewport_from_layout(),
+                            ),
+                    ),
             );
         } else if let Some(c) = &self.results.compared {
             body = body.child(div().flex_shrink_0().text_color(if c.diff.partial { theme.warning } else { theme.secondary }).child(format!("{} added · {} removed · {} changed · {} unchanged — mapped columns of retained rows ONLY{}", c.diff.added, c.diff.removed, c.diff.changed, c.diff.unchanged, if c.diff.partial { " · PARTIAL inputs (page, interrupted or retention-limited)" } else { "" })))
@@ -1163,6 +1191,32 @@ impl Workbench {
                 "Choose two pins and key/column mappings, then Compare retained rows."
             });
         }
-        Some(body.into_any_element())
+        Some(
+            div()
+                .relative()
+                .size_full()
+                .pr(px(12.))
+                .child(body)
+                .child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .bottom_0()
+                        .right_0()
+                        .w(px(12.))
+                        .debug_selector(|| "snapshot-scrollbar-y".into())
+                        .child(
+                            ui::scrollbar(
+                                "snapshot-scroll-y",
+                                gpui_kit::base::ScrollbarAxis::Vertical,
+                                &self.results.viewport_scroll,
+                                window,
+                                cx,
+                            )
+                            .viewport_from_layout(),
+                        ),
+                )
+                .into_any_element(),
+        )
     }
 }

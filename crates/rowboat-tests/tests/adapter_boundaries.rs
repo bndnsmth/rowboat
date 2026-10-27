@@ -4,6 +4,10 @@
 fn completion_consumers_do_not_embed_engine_catalog_sql() {
     let consumers = [
         (
+            "GUI database/schema navigation",
+            include_str!("../../rowboat/src/namespace_ui.rs"),
+        ),
+        (
             "GUI completion",
             include_str!("../../rowboat/src/completion_ui.rs"),
         ),

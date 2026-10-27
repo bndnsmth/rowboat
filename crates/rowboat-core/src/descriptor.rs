@@ -13,6 +13,12 @@ pub enum NamespaceBehavior {
     AttachedDatabases,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DatabaseSelection {
+    InSession,
+    Reconnect,
+    Unsupported,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DialectFamily {
     PostgreSql,
     MySql,
@@ -66,6 +72,7 @@ pub struct EngineDescriptor {
     pub name: &'static str,
     pub connection_kind: ConnectionKind,
     pub namespaces: NamespaceBehavior,
+    pub database_selection: DatabaseSelection,
     pub dialect: DialectDescriptor,
     pub object_kinds: &'static [ObjectKind],
     pub tools: EngineTools,
@@ -84,6 +91,7 @@ const PG: EngineDescriptor = EngineDescriptor {
     name: "PostgreSQL",
     connection_kind: ConnectionKind::Network,
     namespaces: NamespaceBehavior::Schemas,
+    database_selection: DatabaseSelection::Reconnect,
     dialect: DialectDescriptor {
         family: DialectFamily::PostgreSql,
         identifier_quote: '"',
@@ -106,6 +114,7 @@ const MY: EngineDescriptor = EngineDescriptor {
     name: "MySQL",
     connection_kind: ConnectionKind::Network,
     namespaces: NamespaceBehavior::Databases,
+    database_selection: DatabaseSelection::InSession,
     dialect: DialectDescriptor {
         family: DialectFamily::MySql,
         identifier_quote: '`',
@@ -126,6 +135,7 @@ const SQLITE: EngineDescriptor = EngineDescriptor {
     name: "SQLite",
     connection_kind: ConnectionKind::File,
     namespaces: NamespaceBehavior::AttachedDatabases,
+    database_selection: DatabaseSelection::Unsupported,
     dialect: DialectDescriptor {
         family: DialectFamily::Sqlite,
         identifier_quote: '"',

@@ -93,12 +93,47 @@ pub struct QueryTab {
 }
 
 pub struct ConnectedData {
-    database: Database,
-    catalog: rowboat_core::NamespaceCatalog,
-    profile: ConnectionProfile,
-    endpoint: ConnectionProfile,
-    password: String,
-    tunnel: Option<Tunnel>,
+    pub(crate) database: Database,
+    pub(crate) catalog: rowboat_core::NamespaceCatalog,
+    pub(crate) profile: ConnectionProfile,
+    pub(crate) endpoint: ConnectionProfile,
+    pub(crate) password: String,
+    pub(crate) tunnel: Option<Tunnel>,
+}
+impl ConnectedData {
+    pub(crate) async fn open(
+        profile: ConnectionProfile,
+        password: String,
+    ) -> anyhow::Result<Box<Self>> {
+        let (tunnel, endpoint) =
+            if profile.engine.descriptor().connection_kind == ConnectionKind::File {
+                (None, profile.clone())
+            } else {
+                let (tunnel, endpoint) = Tunnel::open(&profile).await.map_err(|e| {
+                    rowboat_services::connection_issue(rowboat_services::ConnectionStage::Ssh, &e)
+                })?;
+                (Some(tunnel), endpoint)
+            };
+        let stage = if profile.engine == Engine::Sqlite {
+            rowboat_services::ConnectionStage::File
+        } else {
+            rowboat_services::ConnectionStage::Database
+        };
+        let database = Database::connect(&endpoint, &password)
+            .await
+            .map_err(|e| rowboat_services::connection_issue(stage, &e))?;
+        let catalog = database.namespace_catalog(None).await.map_err(|e| {
+            rowboat_services::connection_issue(rowboat_services::ConnectionStage::Catalog, &e)
+        })?;
+        Ok(Box::new(Self {
+            database,
+            catalog,
+            profile,
+            endpoint,
+            password,
+            tunnel,
+        }))
+    }
 }
 
 pub struct Envelope {
@@ -130,6 +165,7 @@ pub enum Event {
     },
     QueryApplied(Box<crate::query_edit_ui::Applied>),
     Namespace(Box<crate::namespace_ui::Loaded>),
+    DatabaseContext(Box<crate::namespace_ui::DatabaseEvent>),
     CustomMetric(Box<crate::custom_metrics_ui::Sampled>),
     Column(Box<crate::columns_ui::ColumnEvent>),
     Access(Box<crate::access_ui::AccessEvent>),
@@ -227,7 +263,7 @@ pub struct ConnectionWorkspace {
     pub(crate) password_subscription: Option<Subscription>,
     pub session_generation: u64,
     pub activity_revision: u64,
-    tunnel: Option<Tunnel>,
+    pub(crate) tunnel: Option<Tunnel>,
     pub passwords: HashMap<String, String>,
     pub session_password: String,
     pub catalog: Vec<TableInfo>,
@@ -911,6 +947,7 @@ impl Workbench {
                     }
                 }
                 Event::Namespace(loaded) => self.receive_namespace(*loaded, cx),
+                Event::DatabaseContext(event) => self.receive_database_context(*event, cx),
                 Event::Query {
                     tab,
                     sql,
@@ -1159,13 +1196,48 @@ impl Workbench {
         self.invalidate_completions(cx);
         let password = self.form.as_ref().unwrap().password.clone();
         self.password_subscription =
-            Some(cx.subscribe(&password, |this, _, event: &InputEvent, _| {
+            Some(cx.subscribe(&password, |this, _, event: &InputEvent, cx| {
                 if matches!(event, InputEvent::Change)
                     && let Some(form) = &mut this.form
                 {
-                    form.password_dirty = true;
+                    form.password_changed();
+                    form.draft_changed();
+                    cx.notify();
                 }
             }));
+        let url = self.form.as_ref().unwrap().url.clone();
+        let subscription = cx.subscribe(&url, |this, _, event: &InputEvent, cx| {
+            if matches!(event, InputEvent::Change)
+                && let Some(form) = &mut this.form
+            {
+                form.url_error = None;
+                form.draft_changed();
+                cx.notify();
+            }
+        });
+        self.form.as_mut().unwrap().url_subscription = Some(subscription);
+        let fields = self
+            .form
+            .as_ref()
+            .unwrap()
+            .fields
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        let subscriptions = fields
+            .iter()
+            .map(|field| {
+                cx.subscribe(field, |this, _, event: &InputEvent, cx| {
+                    if matches!(event, InputEvent::Change)
+                        && let Some(form) = &mut this.form
+                    {
+                        form.draft_changed();
+                        cx.notify();
+                    }
+                })
+            })
+            .collect();
+        self.form.as_mut().unwrap().field_subscriptions = subscriptions;
         self.error = None;
         self.quick_open = false;
         self.request_credential(cx);
@@ -1195,7 +1267,7 @@ impl Workbench {
         let password = if form.is_file() {
             String::new()
         } else {
-            form.password.read(cx).value().to_string()
+            form.password_value(cx)
         };
         if form.keyring_loading || form.file_request.is_some() || self.busy {
             return;
@@ -1356,28 +1428,9 @@ impl Workbench {
         let runtime = self.runtime.clone();
         self.runtime.spawn_blocking(move || {
             runtime.block_on(async move {
-                let result = async {
-                    let (tunnel, forwarded) = if profile.engine.descriptor().connection_kind
-                        == rowboat_core::ConnectionKind::File
-                    {
-                        (None, profile.clone())
-                    } else {
-                        let (tunnel, forwarded) = Tunnel::open(&profile).await?;
-                        (Some(tunnel), forwarded)
-                    };
-                    let database = Database::connect(&forwarded, &password).await?;
-                    let catalog = database.namespace_catalog(None).await?;
-                    Ok::<_, anyhow::Error>(Box::new(ConnectedData {
-                        database,
-                        catalog,
-                        profile,
-                        endpoint: forwarded,
-                        password,
-                        tunnel,
-                    }))
-                }
-                .await
-                .map_err(|e| format!("{e:#}"));
+                let result = ConnectedData::open(profile, password)
+                    .await
+                    .map_err(|e| format!("{e:#}"));
                 let _ = tx.send(Event::Connected(result));
             })
         });

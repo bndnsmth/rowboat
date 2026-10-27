@@ -418,7 +418,8 @@ fn pass20_switch_existing_workspace_preserves_physical_sqlite_session_and_sql(
             .test_workspace_host(id)
             .expect("satellite opened")
     });
-    click(cx, w, "manage-connections");
+    assert!(visible(cx, w, "connection-manager"));
+    cx.read(|cx| assert!(!retained.read(cx).shared.borrow().shell_modal_open));
     click(cx, w, "manager-open-physical");
     assert_eq!(tick(cx, w, &shell).len(), 1);
     cx.read(|cx| {
@@ -533,4 +534,241 @@ fn pass20_async_removal_failure_stale_callback_and_form_owner_guard(cx: &mut Tes
     .unwrap();
     click(cx, w, "manager-remove-confirm");
     cx.read(|cx| assert!(profile_ids(retained.read(cx)).contains(&"saved-file".into())));
+}
+
+fn recovery(owner: Option<&str>, open: bool) -> crate::session::SessionState {
+    crate::session::SessionState {
+        version: crate::session::FORMAT_VERSION,
+        active_tab: 7,
+        tabs: vec![crate::session::TabBuffer {
+            id: 7,
+            connection_id: owner.map(str::to_owned),
+            title: "Retained SQL".into(),
+            sql: "SELECT 'retained draft 雪'".into(),
+        }],
+        workspaces: vec![crate::session::WorkspaceBuffer {
+            connection_id: owner.map(str::to_owned),
+            active_tab: 7,
+            split_tab: None,
+            focused_pane: 0,
+            open,
+            documents: Default::default(),
+            staged: Default::default(),
+        }],
+    }
+}
+
+#[gpui_kit::test]
+fn pass20_empty_startup_is_connections_without_implicit_workspace(cx: &mut TestAppContext) {
+    let runtime = crate::app_runtime::AppRuntime::new().unwrap();
+    for profiles in [vec![], vec![file_profile("saved-file")]] {
+        let (w, shell, workspaces) = crate::pass14_tools::workspace_with_session(
+            cx,
+            runtime.handle(),
+            rowboat_services::AppState {
+                connections: profiles,
+                ..Default::default()
+            },
+            Default::default(),
+            Default::default(),
+        );
+        draw(cx, w);
+        assert!(workspaces.is_empty());
+        assert!(visible(cx, w, "connection-manager"));
+        assert!(!visible(cx, w, "manager-close"));
+        cx.simulate_keystrokes(w, "escape");
+        assert!(tick(cx, w, &shell).is_empty());
+        assert!(visible(cx, w, "connection-manager"));
+        // The normal add form cancels back to the browser, never a blank editor.
+        click(cx, w, "manager-new");
+        let editor = cx.read(|cx| shell.read(cx).test_manager_editor().unwrap());
+        cx.read(|cx| {
+            let s = editor.read(cx);
+            assert!(s.form.as_ref().unwrap().credential_request.is_none());
+            assert!(s.database.is_none() && !s.busy);
+            assert_eq!(s.query_run_invocations, 0);
+        });
+        cx.simulate_keystrokes(w, "escape");
+        assert!(tick(cx, w, &shell).is_empty());
+        assert!(visible(cx, w, "manager-search"));
+        click(cx, w, "manager-draft");
+        let opened = tick(cx, w, &shell);
+        assert_eq!(opened.len(), 1);
+        assert!(!visible(cx, w, "connection-manager"));
+        cx.read(|cx| {
+            let s = opened[0].read(cx);
+            assert!(s.owner.is_none() && s.database.is_none() && s.form.is_none());
+            assert_eq!(s.query_run_invocations, 0);
+        });
+    }
+}
+
+#[gpui_kit::test]
+fn pass20_archived_only_startup_keeps_sql_until_explicit_reopen(cx: &mut TestAppContext) {
+    let runtime = crate::app_runtime::AppRuntime::new().unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let mut profile = file_profile("saved-file");
+    profile.file = Some(SqliteFileOptions {
+        path: directory.path().join("archived.sqlite"),
+        mode: SqliteOpenMode::CreateIfMissing,
+    });
+    for owner in [None, Some("saved-file")] {
+        let (w, shell, workspaces) = crate::pass14_tools::workspace_with_session(
+            cx,
+            runtime.handle(),
+            rowboat_services::AppState {
+                connections: vec![profile.clone()],
+                ..Default::default()
+            },
+            recovery(owner, false),
+            Default::default(),
+        );
+        draw(cx, w);
+        assert!(workspaces.is_empty());
+        assert!(visible(cx, w, "connection-manager"));
+        assert!(tick(cx, w, &shell).is_empty());
+        click(
+            cx,
+            w,
+            if owner.is_some() {
+                "manager-open-saved-file"
+            } else {
+                "manager-draft"
+            },
+        );
+        let opened = tick(cx, w, &shell);
+        assert_eq!(opened.len(), 1);
+        assert!(!visible(cx, w, "connection-manager"));
+        cx.read(|cx| {
+            let s = opened[0].read(cx);
+            assert_eq!(s.owner.as_deref(), owner);
+            assert_eq!(s.tabs[0].id, 7);
+            assert_eq!(
+                s.tabs[0].editor.read(cx).value().as_ref(),
+                "SELECT 'retained draft 雪'"
+            );
+            assert_eq!(s.query_run_invocations, 0);
+        });
+    }
+}
+
+#[gpui_kit::test]
+fn pass20_open_recovery_and_explicit_startup_bypass_connection_home(cx: &mut TestAppContext) {
+    let runtime = crate::app_runtime::AppRuntime::new().unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let mut profile = file_profile("saved-file");
+    profile.file = Some(SqliteFileOptions {
+        path: directory.path().join("startup.sqlite"),
+        mode: SqliteOpenMode::CreateIfMissing,
+    });
+    for (session, startup, expected) in [
+        (
+            recovery(None, true),
+            crate::app::Startup::default(),
+            "SELECT 'retained draft 雪'",
+        ),
+        (
+            recovery(Some("saved-file"), true),
+            crate::app::Startup::default(),
+            "SELECT 'retained draft 雪'",
+        ),
+        (
+            Default::default(),
+            crate::app::Startup {
+                sql: Some("SELECT 'explicit startup'".into()),
+                ..Default::default()
+            },
+            "SELECT 'explicit startup'",
+        ),
+        (
+            recovery(Some("saved-file"), false),
+            crate::app::Startup {
+                connection: Some("saved-file".into()),
+                sql: Some("SELECT 'explicit connection'".into()),
+                ..Default::default()
+            },
+            "SELECT 'explicit connection'",
+        ),
+    ] {
+        let (w, shell, workspaces) = crate::pass14_tools::workspace_with_session(
+            cx,
+            runtime.handle(),
+            rowboat_services::AppState {
+                connections: vec![profile.clone()],
+                ..Default::default()
+            },
+            session,
+            startup,
+        );
+        draw(cx, w);
+        assert_eq!(workspaces.len(), 1);
+        assert!(!visible(cx, w, "connection-manager"));
+        assert_eq!(tick(cx, w, &shell).len(), 1);
+        cx.read(|cx| {
+            let s = workspaces[0].read(cx);
+            assert_eq!(
+                s.tabs[s.active_tab].editor.read(cx).value().as_ref(),
+                expected
+            );
+            assert_eq!(s.query_run_invocations, 0);
+            assert!(s.form.is_none());
+        });
+    }
+}
+
+#[gpui_kit::test]
+fn pass20_empty_main_browser_allows_returning_satellite_and_its_commands(cx: &mut TestAppContext) {
+    let runtime = crate::app_runtime::AppRuntime::new().unwrap();
+    let (w, shell, retained) = setup(cx, runtime.handle());
+    let (id, editor) = cx.update(|cx| {
+        retained.update(cx, |s, _| {
+            s.shell_tx
+                .send(crate::workspace_shell::Command::Move {
+                    route: s.tx.route,
+                    host_epoch: s.host_epoch,
+                })
+                .unwrap();
+            (s.workspace_id, s.tabs[0].editor.clone())
+        })
+    });
+    tick(cx, w, &shell);
+    assert!(visible(cx, w, "connection-manager"));
+    let host = cx.read(|cx| shell.read(cx).test_workspace_host(id).unwrap());
+    cx.read(|cx| assert!(!retained.read(cx).shared.borrow().shell_modal_open));
+    // A retained workspace can still request a new query while the main window
+    // is only showing its default browser.
+    cx.update(|cx| {
+        retained.update(cx, |s, _| {
+            s.shell_tx
+                .send(crate::workspace_shell::Command::OpenQuery {
+                    owner: s.owner.clone(),
+                    sql: "SELECT 'satellite'".into(),
+                    title: "Satellite SQL".into(),
+                })
+                .unwrap();
+        })
+    });
+    assert_eq!(tick(cx, w, &shell).len(), 1);
+    cx.read(|cx| {
+        let s = retained.read(cx);
+        assert_eq!(s.tabs.len(), 2);
+        assert_eq!(s.tabs[0].editor, editor);
+        assert_eq!(s.query_run_invocations, 0);
+    });
+    // Rehosting remains possible without dismissing the default browser first.
+    cx.update(|cx| {
+        retained.update(cx, |s, _| {
+            s.shell_tx
+                .send(crate::workspace_shell::Command::Move {
+                    route: s.tx.route,
+                    host_epoch: s.host_epoch,
+                })
+                .unwrap();
+        })
+    });
+    let workspaces = tick(cx, w, &shell);
+    assert_eq!(workspaces, vec![retained]);
+    assert!(!visible(cx, w, "connection-manager"));
+    assert!(cx.update_window(host, |_, _, _| ()).is_err());
+    cx.read(|cx| assert!(shell.read(cx).test_workspace_host(id).is_none()));
 }

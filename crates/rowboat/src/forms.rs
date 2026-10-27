@@ -56,6 +56,12 @@ pub struct ConnectionForm {
     pub test_request: Option<uuid::Uuid>,
     pub test_task: Option<tokio::task::AbortHandle>,
     pub test_result: Option<(String, String)>,
+    pub test_succeeded: bool,
+    pub test_stale: bool,
+    pub validation_attempted: bool,
+    pub reveal_field: Option<&'static str>,
+    pub scroll: ScrollHandle,
+    pub field_subscriptions: Vec<Subscription>,
     pub confirm_replace: bool,
     drafts: Vec<(Engine, EngineDraft)>,
     pub file_mode: SqliteOpenMode,
@@ -69,6 +75,12 @@ pub struct ConnectionForm {
     pub engine: Engine,
     pub fields: BTreeMap<&'static str, Entity<InputState>>,
     pub password: Entity<InputState>,
+    // Single-line controls normalize line breaks. Preserve imported credential
+    // bytes in memory until the displayed password is actually changed.
+    password_exact: Option<(String, String)>,
+    pub url: Entity<InputState>,
+    pub url_error: Option<String>,
+    pub url_subscription: Option<Subscription>,
     pub read_only: bool,
     pub ssh: bool,
     pub advanced: bool,
@@ -94,12 +106,216 @@ impl Drop for ConnectionForm {
 }
 
 impl ConnectionForm {
+    pub fn draft_changed(&mut self) {
+        let stale = self.test_stale || self.test_request.is_some() || self.test_result.is_some();
+        self.cancel_test();
+        self.test_stale = stale;
+    }
+    pub fn test_feedback(&self, cx: &App) -> Option<bool> {
+        self.test_result
+            .as_ref()
+            .filter(|(fingerprint, _)| *fingerprint == self.fingerprint(cx))
+            .map(|_| self.test_succeeded)
+    }
+    /// Ordered by form flow; messages contain no supplied values or credentials.
+    pub fn validation_errors(&self, cx: &App) -> Vec<(&'static str, &'static str)> {
+        let v = |key| self.fields[key].read(cx).value().trim().to_string();
+        let mut errors = Vec::new();
+        if !self.url.read(cx).value().trim().is_empty() {
+            errors.push((
+                "url",
+                "Fill fields from the connection URL before continuing.",
+            ));
+        }
+        if v("name").is_empty() {
+            errors.push(("name", "Give this connection a name."));
+        }
+        if self.is_file() {
+            let path = v("file_path");
+            let folded = path.to_ascii_lowercase();
+            if path.is_empty() {
+                errors.push(("file_path", "Choose a database file path."));
+            } else if folded == ":memory:"
+                || folded.starts_with("file:")
+                || folded.starts_with("sqlite:")
+            {
+                errors.push((
+                    "file_path",
+                    "Use a filesystem path, not a SQLite URI or memory database.",
+                ));
+            }
+            if self.read_only && self.file_mode == SqliteOpenMode::CreateIfMissing {
+                errors.push(("file_path", "Read-only requires Open existing mode."));
+            }
+        } else {
+            if v("host").is_empty() {
+                errors.push(("host", "Host is required."));
+            } else if rowboat_services::validate_connection_host(&v("host")).is_err() {
+                errors.push((
+                    "host",
+                    "Enter a DNS hostname or an unbracketed IP address—not a URL.",
+                ));
+            }
+            if v("port").parse::<u16>().ok().is_none_or(|p| p == 0) {
+                errors.push(("port", "Port must be between 1 and 65535."));
+            }
+            if v("database").is_empty() {
+                errors.push(("database", "Database is required."));
+            }
+            if v("username").is_empty() {
+                errors.push(("username", "Username is required."));
+            }
+            if !["disable", "prefer", "require", "verify-ca", "verify-full"]
+                .contains(&v("ssl_mode").as_str())
+            {
+                errors.push((
+                    "ssl_mode",
+                    "TLS mode must be disable, prefer, require, verify-ca, or verify-full.",
+                ));
+            }
+            if self.ssh {
+                if v("ssh_host").is_empty() {
+                    errors.push(("ssh_host", "SSH host is required."));
+                } else if rowboat_services::validate_connection_host(&v("ssh_host")).is_err() {
+                    errors.push((
+                        "ssh_host",
+                        "Enter a valid SSH hostname or unbracketed IP address.",
+                    ));
+                }
+                if v("ssh_port").parse::<u16>().ok().is_none_or(|p| p == 0) {
+                    errors.push(("ssh_port", "SSH port must be between 1 and 65535."));
+                }
+                if v("ssh_username").is_empty()
+                    || v("ssh_username").chars().any(char::is_whitespace)
+                {
+                    errors.push(("ssh_username", "Enter an SSH username without whitespace."));
+                }
+            }
+        }
+        for key in [
+            "name",
+            "group",
+            "file_path",
+            "host",
+            "database",
+            "username",
+            "ssl_ca",
+            "ssl_cert",
+            "ssl_key",
+            "ssh_host",
+            "ssh_username",
+            "ssh_identity",
+        ] {
+            let relevant = match key {
+                "name" | "group" => true,
+                "file_path" => self.is_file(),
+                key if key.starts_with("ssh_") => !self.is_file() && self.ssh,
+                _ => !self.is_file(),
+            };
+            if relevant
+                && self.fields[key]
+                    .read(cx)
+                    .value()
+                    .chars()
+                    .any(char::is_control)
+                && !errors.iter().any(|(field, _)| *field == key)
+            {
+                errors.push((key, "Control characters are not supported in this field."));
+            }
+        }
+        errors
+    }
+    pub fn password_value(&self, cx: &App) -> String {
+        let displayed = self.password.read(cx).value().to_string();
+        self.password_exact
+            .as_ref()
+            .filter(|(preview, _)| preview == &displayed)
+            .map_or(displayed, |(_, exact)| exact.clone())
+    }
+    pub fn has_exact_password(&self) -> bool {
+        self.password_exact.is_some()
+    }
+    pub fn set_password(&mut self, value: String, window: &mut Window, cx: &mut App) {
+        self.password
+            .update(cx, |field, cx| field.set_value(value.clone(), window, cx));
+        let displayed = self.password.read(cx).value().to_string();
+        self.password_exact = (displayed != value).then_some((displayed, value));
+    }
+    pub fn password_changed(&mut self) {
+        self.password_dirty = true;
+        // set_value() does not emit Change; only user edits reach here. Even
+        // replacing the preview with identical text explicitly replaces the import.
+        self.password_exact = None;
+    }
+    pub fn fill_from_url(&mut self, window: &mut Window, cx: &mut App) -> anyhow::Result<()> {
+        let raw = self.url.read(cx).value().to_string();
+        if raw.trim().is_empty() {
+            return Ok(());
+        }
+        anyhow::ensure!(raw.len() <= 16_384, "Connection URL exceeds 16 KiB");
+        // Parse completely before touching any of the reviewed form fields.
+        let parsed = rowboat_services::parse_connection_url(raw.trim())?;
+        let name = self.fields["name"].read(cx).value().to_string();
+        let replace_name = name.trim().is_empty() || name == ConnectionProfile::default().name;
+        let read_only = self.read_only;
+        let ssh = self.ssh;
+        let ssh_fields: Vec<_> = ["ssh_host", "ssh_port", "ssh_username", "ssh_identity"]
+            .into_iter()
+            .map(|key| (key, self.fields[key].read(cx).value().to_string()))
+            .collect();
+        let credential_exists = self.credential_exists;
+        self.select_engine(parsed.profile.engine, window, cx);
+        self.cancel_test();
+        self.credential_request = None;
+        self.file_request = None;
+        self.keyring_loading = false;
+        self.confirm_replace = false;
+        let p = parsed.profile;
+        for (key, value) in [
+            ("host", p.host),
+            ("port", p.port.to_string()),
+            ("database", p.database),
+            ("username", p.username),
+            ("ssl_mode", p.ssl_mode),
+            ("ssl_ca", p.ssl_ca.unwrap_or_default()),
+            ("ssl_cert", p.ssl_cert.unwrap_or_default()),
+            ("ssl_key", p.ssl_key.unwrap_or_default()),
+        ] {
+            self.fields[key].update(cx, |field, cx| field.set_value(value, window, cx));
+        }
+        if replace_name {
+            self.fields["name"].update(cx, |field, cx| field.set_value(p.name, window, cx));
+        }
+        self.set_password(parsed.password.unwrap_or_default(), window, cx);
+        self.password_dirty = true;
+        self.remember = false;
+        self.remember_touched = true;
+        self.credential_exists = credential_exists;
+        self.read_only = read_only;
+        self.ssh = ssh;
+        if ssh {
+            for (key, value) in ssh_fields {
+                self.fields[key].update(cx, |field, cx| field.set_value(value, window, cx));
+            }
+        }
+        self.advanced = ssh
+            || self.fields["ssl_mode"].read(cx).value() != "prefer"
+            || ["ssl_ca", "ssl_cert", "ssl_key"]
+                .iter()
+                .any(|key| !self.fields[key].read(cx).value().is_empty());
+        self.url
+            .update(cx, |field, cx| field.set_value("", window, cx));
+        self.url_error = None;
+        Ok(())
+    }
     pub fn cancel_test(&mut self) {
         if let Some(task) = self.test_task.take() {
             task.abort();
         }
         self.test_request = None;
         self.test_result = None;
+        self.test_succeeded = false;
+        self.test_stale = false;
     }
     pub fn is_file(&self) -> bool {
         self.engine.descriptor().connection_kind == ConnectionKind::File
@@ -117,7 +333,7 @@ impl ConnectionForm {
                 .filter(|(k, _)| !matches!(**k, "name" | "group"))
                 .map(|(k, v)| (*k, v.read(cx).value().to_string()))
                 .collect(),
-            password: self.password.read(cx).value().to_string(),
+            password: self.password_value(cx),
             remember: self.remember,
             credential_exists: self.credential_exists,
             read_only: self.read_only,
@@ -138,8 +354,7 @@ impl ConnectionForm {
             for (key, value) in draft.fields {
                 self.fields[key].update(cx, |input, cx| input.set_value(value, window, cx));
             }
-            self.password
-                .update(cx, |p, cx| p.set_value(draft.password, window, cx));
+            self.set_password(draft.password, window, cx);
             self.remember = draft.remember;
             self.credential_exists = draft.credential_exists;
             self.read_only = draft.read_only;
@@ -150,8 +365,7 @@ impl ConnectionForm {
             self.remember_touched = true;
             return;
         }
-        self.password
-            .update(cx, |p, cx| p.set_value("", window, cx));
+        self.set_password(String::new(), window, cx);
         self.remember = false;
         self.credential_exists = false;
         self.password_dirty = true;
@@ -220,12 +434,27 @@ impl ConnectionForm {
                     .unwrap_or_default(),
             ),
         ];
+        let password = if is_file { String::new() } else { password };
+        let password_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .default_value(password.clone())
+                .masked(true)
+                .placeholder("Kept in memory for this session")
+        });
+        let displayed = password_input.read(cx).value().to_string();
+        let password_exact = (displayed != password).then_some((displayed, password));
         Self {
             instance: uuid::Uuid::new_v4(),
             credential_request: None,
             test_request: None,
             test_task: None,
             test_result: None,
+            test_succeeded: false,
+            test_stale: false,
+            validation_attempted: false,
+            reveal_field: None,
+            scroll: ScrollHandle::new(),
+            field_subscriptions: Vec::new(),
             confirm_replace: false,
             drafts: Vec::new(),
             file_mode,
@@ -241,12 +470,15 @@ impl ConnectionForm {
                 .into_iter()
                 .map(|(k, v)| (k, input(v, "", window, cx)))
                 .collect(),
-            password: cx.new(|cx| {
+            password: password_input,
+            password_exact,
+            url: cx.new(|cx| {
                 InputState::new(window, cx)
-                    .default_value(if is_file { String::new() } else { password })
                     .masked(true)
-                    .placeholder("Kept in memory for this session")
+                    .placeholder("postgresql://… or mysql://…")
             }),
+            url_error: None,
+            url_subscription: None,
             read_only: profile.read_only,
             ssh: !is_file && ssh.is_some(),
             advanced: !is_file && ssh.is_some(),
@@ -268,27 +500,22 @@ impl ConnectionForm {
             self.read_only,
             self.ssh,
             self.remember,
-            self.password.read(cx).value().to_string(),
+            self.password_value(cx),
+            self.url.read(cx).value().to_string(),
         ))
         .unwrap()
     }
 
     pub fn profile(&self, cx: &App) -> anyhow::Result<ConnectionProfile> {
+        if let Some((_, message)) = self.validation_errors(cx).first() {
+            anyhow::bail!("{message}");
+        }
         let v = |key| self.fields[key].read(cx).value().trim().to_string();
         let optional = |key| {
             let s: String = v(key);
             (!s.is_empty()).then_some(s)
         };
-        anyhow::ensure!(!v("name").is_empty(), "Give this connection a name.");
         if self.is_file() {
-            anyhow::ensure!(
-                !v("file_path").is_empty(),
-                "Database file path is required."
-            );
-            anyhow::ensure!(
-                !(self.read_only && self.file_mode == SqliteOpenMode::CreateIfMissing),
-                "Read-only requires Open existing mode."
-            );
             return Ok(ConnectionProfile {
                 id: self.id.clone(),
                 name: v("name"),
@@ -302,22 +529,8 @@ impl ConnectionForm {
                 ..Default::default()
             });
         }
-        anyhow::ensure!(!v("host").is_empty(), "Host is required.");
-        anyhow::ensure!(!v("username").is_empty(), "Username is required.");
-        anyhow::ensure!(
-            ["disable", "prefer", "require", "verify-ca", "verify-full"]
-                .contains(&v("ssl_mode").as_str()),
-            "TLS mode must be disable, prefer, require, verify-ca, or verify-full."
-        );
-        let port: u16 = v("port")
-            .parse()
-            .map_err(|_| anyhow::anyhow!("Port must be between 1 and 65535."))?;
-        anyhow::ensure!(port > 0, "Port must be between 1 and 65535.");
+        let port = v("port").parse()?;
         let ssh = if self.ssh {
-            anyhow::ensure!(
-                !v("ssh_host").is_empty() && !v("ssh_username").is_empty(),
-                "SSH host and username are required."
-            );
             Some(SshConfig {
                 host: v("ssh_host"),
                 username: v("ssh_username"),

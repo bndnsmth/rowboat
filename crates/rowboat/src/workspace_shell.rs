@@ -200,7 +200,9 @@ impl WorkspaceShell {
     ) {
         if !crate::workspace_model::workspace_commands_allowed(
             self.initialized,
-            self.closing.is_some() || self.restore.is_some() || self.connection_manager.is_some(),
+            self.closing.is_some()
+                || self.restore.is_some()
+                || self.connection_manager_blocks_workspaces(),
         ) {
             return;
         }
@@ -373,6 +375,9 @@ impl WorkspaceShell {
         if let Some(existing) = self.ownership.find(&owner) {
             return existing;
         }
+        if !self.connection_manager_blocks_workspaces() {
+            self.connection_manager = None;
+        }
         let id = self.next_workspace;
         self.next_workspace += 1;
         let init = WorkspaceInit {
@@ -467,7 +472,7 @@ impl WorkspaceShell {
                 .or_default()
                 .push(tab);
         }
-        if groups.is_empty() || has_startup {
+        if has_startup {
             groups.entry(startup_owner.clone()).or_default();
         }
         for (owner, tabs) in groups {
@@ -497,6 +502,7 @@ impl WorkspaceShell {
         }
         if self.workspaces.is_empty() {
             self.active = 0;
+            self.ensure_connection_manager(window, cx);
             cx.notify();
             return;
         }
@@ -506,7 +512,7 @@ impl WorkspaceShell {
         self.activate(self.active, window, cx);
     }
     fn activate(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
-        if self.closing.is_some() || self.connection_manager.is_some() {
+        if self.closing.is_some() || self.connection_manager_blocks_workspaces() {
             return;
         }
         if let Some(workspace) = self.workspaces.iter().find(|w| w.id == id) {
@@ -519,6 +525,9 @@ impl WorkspaceShell {
                     w.focus(&focus, cx);
                 });
                 return;
+            }
+            if self.connection_manager.take().is_some() {
+                self.shared.borrow_mut().shell_modal_open = false;
             }
             self.active = id;
             self.shared.borrow_mut().active_workspace = id;
@@ -537,7 +546,9 @@ impl WorkspaceShell {
     ) {
         if !crate::workspace_model::workspace_commands_allowed(
             self.initialized,
-            self.closing.is_some() || self.restore.is_some() || self.connection_manager.is_some(),
+            self.closing.is_some()
+                || self.restore.is_some()
+                || self.connection_manager_blocks_workspaces(),
         ) {
             return;
         }
@@ -574,7 +585,7 @@ impl WorkspaceShell {
         self.shared.borrow_mut().shell_modal_open = self.live_diff.is_some()
             || self.closing.is_some()
             || self.restore.is_some()
-            || self.connection_manager.is_some();
+            || self.connection_manager_blocks_workspaces();
         let preferences = self.shared.borrow().state.preferences.clone();
         match crate::preferences_ui::bind_shortcuts(&self.shortcut_bindings, &preferences, cx) {
             Ok(bindings) => self.shortcut_bindings = bindings,
@@ -762,7 +773,7 @@ impl WorkspaceShell {
                         let previous = state.owner.clone();
                         let assigned = Some(save.profile.id.clone());
                         let result = if self.closing.is_some()
-                            || self.connection_manager.is_some()
+                            || self.connection_manager_blocks_workspaces()
                             || !self.shared.borrow().writable
                         {
                             Err("Profile save blocked while closing or storage unavailable".into())
@@ -814,7 +825,7 @@ impl WorkspaceShell {
                 Command::OpenQuery { owner, sql, title } => {
                     if !crate::workspace_model::workspace_commands_allowed(
                         self.initialized,
-                        self.closing.is_some() || self.connection_manager.is_some(),
+                        self.closing.is_some() || self.connection_manager_blocks_workspaces(),
                     ) {
                         continue;
                     }
@@ -900,6 +911,7 @@ impl WorkspaceShell {
                 self.finish_close(window, cx);
             }
         }
+        self.ensure_connection_manager(window, cx);
     }
     fn snapshot(&self, cx: &App) -> SessionState {
         let mut state = SessionState {
@@ -1041,12 +1053,20 @@ impl WorkspaceShell {
         state
     }
     fn request_close(&mut self, closing: Closing, window: &mut Window, cx: &mut Context<Self>) {
-        if self.shutting_down
-            || self.closing.is_some()
-            || self.restore.is_some()
-            || self.connection_manager.is_some()
-        {
+        if self.shutting_down || self.closing.is_some() || self.restore.is_some() {
             return;
+        }
+        if let Some(manager) = &self.connection_manager {
+            if self.manager_busy(cx) {
+                return;
+            }
+            if manager.has_pending_dialog() {
+                // Back out of an idle profile form/confirmation first; never
+                // abandon an in-flight save, import or keyring removal.
+                self.dismiss_connection_manager(window, cx);
+                return;
+            }
+            self.connection_manager = None;
         }
         self.closing = Some(closing);
         self.pause_close(cx);
@@ -1087,6 +1107,7 @@ impl WorkspaceShell {
         }
         self.closing = None;
         self.activate(self.active, window, cx);
+        self.ensure_connection_manager(window, cx);
         cx.notify();
     }
     fn confirm_close(&mut self, choice: CloseChoice, window: &mut Window, cx: &mut Context<Self>) {
@@ -1240,7 +1261,7 @@ impl WorkspaceShell {
             || self.closing.is_some()
             || self.restore.is_some()
             || self.live_diff.is_some()
-            || self.connection_manager.is_some()
+            || self.connection_manager_blocks_workspaces()
             || !self.shared.borrow().writable
         {
             return;
@@ -1252,16 +1273,12 @@ impl WorkspaceShell {
         if state.tx.route != route
             || state.host_epoch != epoch
             || !state.namespace_switch_allowed()
-            || !state
-                .namespace
-                .snapshot
-                .as_ref()
-                .is_some_and(|s| s.namespaces.contains(&database))
+            || !state.database_choice_exists(&database)
         {
             return;
         }
         let Some(mut profile) = state.profile.clone().filter(|p| {
-            p.engine.descriptor().namespaces == rowboat_core::NamespaceBehavior::Databases
+            p.engine.descriptor().database_selection != rowboat_core::DatabaseSelection::Unsupported
         }) else {
             return;
         };
@@ -1296,7 +1313,7 @@ impl WorkspaceShell {
     }
     fn move_workspace(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
         if self.closing.is_some()
-            || self.connection_manager.is_some()
+            || self.connection_manager_blocks_workspaces()
             || self.live_diff.is_some()
             || self.restore.is_some()
             || !self.initialized
@@ -1314,6 +1331,8 @@ impl WorkspaceShell {
         }
         let entity = workspace.entity.clone();
         if let Some(old) = workspace.host {
+            self.connection_manager = None;
+            self.shared.borrow_mut().shell_modal_open = false;
             entity.update(cx, |s, cx| s.rehost(window, cx));
             self.workspaces[index].host = None;
             self.active = id;
@@ -1367,6 +1386,7 @@ impl WorkspaceShell {
             }
         }
         self.shared.borrow_mut().active_workspace = id;
+        self.ensure_connection_manager(window, cx);
         cx.notify();
     }
 }
@@ -1839,8 +1859,8 @@ impl Render for WorkspaceShell {
                     .min_h_0()
                     .child(workspace.entity.clone()),
             );
-        } else {
-            let mut welcome = div()
+        } else if !self.initialized {
+            let welcome = div()
                 .p_6()
                 .flex()
                 .flex_col()
@@ -1849,34 +1869,14 @@ impl Render for WorkspaceShell {
                     div()
                         .text_size(px(16.))
                         .font_weight(FontWeight::SEMIBOLD)
-                        .child(if self.initialized { "Your workspaces" } else { "Opening Rowboat" }),
+                        .child("Opening Rowboat"),
                 )
                 .child(
                     div()
                         .text_size(px(13.))
                         .text_color(theme.secondary)
-                        .child(if self.initialized {
-                            "Reopen a saved connection or choose New workspace to recover unassigned drafts."
-                        } else {
-                            "Loading profiles and SQL recovery…"
-                        }),
+                        .child("Loading profiles and SQL recovery…"),
                 );
-            if self.initialized {
-                for profile in self.shared.borrow().state.connections.clone() {
-                    let label = profile.name.clone();
-                    welcome = welcome.child(
-                        ui::button(
-                            SharedString::from(profile.id.clone()),
-                            label,
-                            ui::ButtonVariant::Secondary,
-                            cx,
-                        )
-                        .on_click(cx.listener(move |s, _, w, cx| {
-                            s.open(Some(profile.clone()), None, w, cx)
-                        })),
-                    );
-                }
-            }
             root = root.child(welcome);
         }
         if let Some(error) = &self.error {

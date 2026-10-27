@@ -1,5 +1,6 @@
 //! Private application state, import/export, keyring, SSH, and database tools.
 mod completion_dialect;
+mod connection_issue;
 mod credentials;
 mod data;
 mod identity;
@@ -17,6 +18,7 @@ mod store;
 mod transfer;
 mod tunnel;
 
+pub use connection_issue::{ConnectionIssue, ConnectionStage, connection_issue};
 #[cfg(target_os = "macos")]
 pub use credentials::credential_helper_main;
 pub use credentials::{CredentialLookup, credential_delete, credential_get, credential_set};
@@ -33,7 +35,7 @@ pub use profiles::{
     ExportOptions, ImportIdPolicy, ImportOptions, ImportReport, MergePolicy, ParsedConnectionUrl,
     connection_url, export_connections, export_connections_with_options, import_connections,
     import_connections_with_options, merge_connections, merge_connections_with_policy,
-    parse_connection_url, validate_profile,
+    parse_connection_url, validate_connection_host, validate_profile,
 };
 pub use providers::{
     ServiceOperation, UnsupportedServiceOperation, default_backup_image, service_support,

@@ -6,7 +6,10 @@ use crate::{
 };
 use gpui_kit::{prelude::*, *};
 use gpui_omarchy::{self as ui};
-use rowboat_core::{NamespaceBehavior, NamespaceCatalog, QueryResult, Structure, TableInfo};
+use rowboat_core::{
+    DatabaseCatalog, DatabaseSelection, NamespaceBehavior, NamespaceCatalog, QueryResult,
+    Structure, TableInfo,
+};
 use std::collections::HashMap;
 
 #[derive(Default)]
@@ -18,6 +21,14 @@ pub struct NamespaceState {
     pub picker: Option<Picker>,
     pub collapsed: [bool; 2],
     pub result_context: HashMap<usize, String>,
+    pub databases: Option<DatabaseCatalog>,
+    database_request: u64,
+    pending_database: Option<(u64, u64)>,
+}
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PickerKind {
+    Namespace,
+    Database,
 }
 pub struct Picker {
     pub filter: Entity<gpui_kit::base::input::InputState>,
@@ -26,6 +37,19 @@ pub struct Picker {
     route: crate::workspace_model::Route,
     epoch: u64,
     _subscription: Subscription,
+    pub(crate) kind: PickerKind,
+    error: Option<String>,
+}
+pub enum DatabaseEvent {
+    Catalog {
+        request: u64,
+        result: Result<DatabaseCatalog, String>,
+    },
+    Switched {
+        request: u64,
+        transaction: Option<bool>,
+        result: Result<Box<ConnectedData>, String>,
+    },
 }
 pub struct Loaded {
     pub query_timing: Option<(usize, u64)>,
@@ -38,6 +62,237 @@ pub fn is_view(info: &TableInfo) -> bool {
     info.kind.to_ascii_lowercase().contains("view")
 }
 impl Workbench {
+    pub(crate) fn database_selection(&self) -> DatabaseSelection {
+        self.profile
+            .as_ref()
+            .map_or(DatabaseSelection::Unsupported, |p| {
+                p.engine.descriptor().database_selection
+            })
+    }
+    pub(crate) fn database_choice_exists(&self, name: &str) -> bool {
+        match self.database_selection() {
+            DatabaseSelection::Reconnect => self
+                .namespace
+                .databases
+                .as_ref()
+                .is_some_and(|c| c.databases.iter().any(|n| n == name)),
+            DatabaseSelection::InSession => self
+                .namespace
+                .snapshot
+                .as_ref()
+                .is_some_and(|c| c.namespaces.iter().any(|n| n == name)),
+            DatabaseSelection::Unsupported => false,
+        }
+    }
+    pub(crate) fn show_databases(&mut self, w: &mut Window, cx: &mut Context<Self>) {
+        if self.database_selection() != DatabaseSelection::Reconnect
+            || !self.namespace_switch_allowed()
+            || self.modal_open()
+        {
+            return;
+        }
+        self.show_namespaces(w, cx);
+        let Some(picker) = self.namespace.picker.as_mut() else {
+            return;
+        };
+        if picker.kind != PickerKind::Namespace {
+            return;
+        }
+        picker.kind = PickerKind::Database;
+        picker.cursor = 0;
+        self.namespace.databases = None;
+        self.namespace.database_request = self.namespace.database_request.wrapping_add(1);
+        let request = self.namespace.database_request;
+        let db = self.database.clone().unwrap();
+        let tx = self.tx.clone();
+        self.busy = true;
+        self.status = "Loading accessible databases…".into();
+        self.runtime.spawn(async move {
+            let result = match tokio::time::timeout(
+                std::time::Duration::from_secs(15),
+                db.database_catalog(),
+            )
+            .await
+            {
+                Ok(result) => result.map_err(|e| format!("{e:#}")),
+                Err(_) => Err("Database discovery timed out; reconnect required".into()),
+            };
+            let _ = tx.send(Event::DatabaseContext(Box::new(DatabaseEvent::Catalog {
+                request,
+                result,
+            })));
+        });
+        cx.notify();
+    }
+    fn choose_server_database(
+        &mut self,
+        name: String,
+        new_workspace: bool,
+        w: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.namespace_switch_allowed() || !self.database_choice_exists(&name) {
+            return;
+        }
+        let Some(picker) = &self.namespace.picker else {
+            return;
+        };
+        if picker.kind != PickerKind::Database
+            || picker.route != self.tx.route
+            || picker.epoch != self.host_epoch
+        {
+            return;
+        }
+        if new_workspace && !self.shared.borrow().writable {
+            return;
+        }
+        self.namespace.picker = None;
+        w.focus(&self.focus, cx);
+        if new_workspace {
+            let _ = self
+                .shell_tx
+                .send(crate::workspace_shell::Command::OpenDatabase {
+                    route: self.tx.route,
+                    host_epoch: self.host_epoch,
+                    database: name,
+                });
+            cx.notify();
+            return;
+        }
+        if self
+            .namespace
+            .snapshot
+            .as_ref()
+            .is_some_and(|c| c.database == name)
+        {
+            cx.notify();
+            return;
+        }
+        let mut profile = self.profile.clone().unwrap();
+        profile.database = name.clone();
+        let password = self.session_password.clone();
+        let old = self.database.clone().unwrap();
+        self.invalidate_completions(cx);
+        self.namespace.database_request = self.namespace.database_request.wrapping_add(1);
+        let request = self.namespace.database_request;
+        self.namespace.pending_database = Some((request, self.host_epoch));
+        self.busy = true;
+        self.error = None;
+        self.status = format!("Connecting to database {name} · current session retained…");
+        let tx = self.tx.clone();
+        self.runtime.spawn(async move {
+            let transaction = tokio::time::timeout(std::time::Duration::from_secs(5), old.in_transaction()).await.ok().and_then(Result::ok);
+            let result = match transaction {
+                Some(false) => match tokio::time::timeout(std::time::Duration::from_secs(20), ConnectedData::open(profile, password)).await {
+                    Ok(Ok(connected)) if connected.catalog.database == name => Ok(connected),
+                    Ok(Ok(_)) => Err("The new connection did not reach the selected database".into()),
+                    Ok(Err(e)) => Err(format!("{e:#}")),
+                    Err(_) => Err("Database connection timed out after 20 seconds".into()),
+                },
+                Some(true) => Err("Commit or roll back the active transaction before switching databases".into()),
+                None => Err("The current session's transaction state could not be verified; reconnect explicitly".into()),
+            };
+            let _ = tx.send(Event::DatabaseContext(Box::new(DatabaseEvent::Switched { request, transaction, result })));
+        });
+        cx.notify();
+    }
+    pub(crate) fn receive_database_context(
+        &mut self,
+        event: DatabaseEvent,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            DatabaseEvent::Catalog { request, result } => {
+                if request != self.namespace.database_request {
+                    return;
+                }
+                self.busy = false;
+                let Some(picker) = &mut self.namespace.picker else {
+                    return;
+                };
+                if picker.kind != PickerKind::Database
+                    || picker.route != self.tx.route
+                    || picker.epoch != self.host_epoch
+                {
+                    return;
+                }
+                match result {
+                    Ok(catalog) => {
+                        picker.cursor = catalog
+                            .databases
+                            .iter()
+                            .position(|n| n == &catalog.database)
+                            .unwrap_or(0);
+                        self.namespace.databases = Some(catalog);
+                        self.status =
+                            "Choose a database · schemas remain independently selectable".into();
+                    }
+                    Err(error) => {
+                        picker.error = Some(error);
+                        self.namespace.known = false;
+                    }
+                }
+            }
+            DatabaseEvent::Switched {
+                request,
+                transaction,
+                result,
+            } => {
+                let Some((pending, epoch)) = self.namespace.pending_database else {
+                    return;
+                };
+                if pending != request {
+                    return;
+                }
+                self.namespace.pending_database = None;
+                self.busy = false;
+                self.transaction_known = transaction.is_some();
+                self.transaction = transaction.unwrap_or(false);
+                if self.close_requested || epoch != self.host_epoch {
+                    return;
+                }
+                match result {
+                    Ok(connected) => {
+                        let ConnectedData {
+                            database,
+                            catalog,
+                            profile,
+                            endpoint,
+                            password,
+                            tunnel,
+                        } = *connected;
+                        self.session_generation = self.session_generation.wrapping_add(1);
+                        self.tx.route.generation = self.session_generation;
+                        self.results.reset();
+                        self.execution = Default::default();
+                        self.query_edit = Default::default();
+                        self.objects = Default::default();
+                        self.advanced.reset_connection();
+                        self.explain = None;
+                        self.relationships = None;
+                        self.relationship_origin = None;
+                        self.relationship_return = None;
+                        self.review_details.clear();
+                        self.invalidate_completions(cx);
+                        self.database = Some(database);
+                        self.endpoint = Some(endpoint);
+                        self.tunnel = tunnel;
+                        self.session_password = password;
+                        self.profile = Some(profile);
+                        self.namespace.databases = None;
+                        self.accept_namespace(catalog, None, cx);
+                        self.error = None;
+                        self.status =
+                            "Database switched · SQL buffers retained; no SQL replayed".into();
+                    }
+                    Err(error) => self.fail(format!(
+                        "Database switch failed; current session retained: {error}"
+                    )),
+                }
+            }
+        }
+        cx.notify();
+    }
     pub(crate) fn namespace_behavior(&self) -> NamespaceBehavior {
         self.profile
             .as_ref()
@@ -119,6 +374,8 @@ impl Workbench {
             route: self.tx.route,
             epoch: self.host_epoch,
             _subscription: subscription,
+            kind: PickerKind::Namespace,
+            error: None,
         });
         if let Some(p) = &self.namespace.picker {
             p.scroll.scroll_to_item(cursor % 50);
@@ -132,6 +389,25 @@ impl Workbench {
             .as_ref()
             .map(|p| p.filter.read(cx).value().to_lowercase())
             .unwrap_or_default();
+        if self
+            .namespace
+            .picker
+            .as_ref()
+            .is_some_and(|p| p.kind == PickerKind::Database)
+        {
+            return self
+                .namespace
+                .databases
+                .as_ref()
+                .map(|c| {
+                    c.databases
+                        .iter()
+                        .filter(|n| n.to_lowercase().contains(&filter))
+                        .cloned()
+                        .collect()
+                })
+                .unwrap_or_default();
+        }
         self.namespace
             .snapshot
             .as_ref()
@@ -174,6 +450,15 @@ impl Workbench {
         w: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self
+            .namespace
+            .picker
+            .as_ref()
+            .is_some_and(|p| p.kind == PickerKind::Database)
+        {
+            self.choose_server_database(name, new_workspace, w, cx);
+            return;
+        }
         if !self.namespace_switch_allowed() {
             return;
         }
@@ -427,6 +712,36 @@ impl Workbench {
             .px_3()
             .gap_1()
             .mb_2()
+            .when(
+                self.database_selection() == DatabaseSelection::Reconnect,
+                |d| {
+                    d.child(label("Database · connection", cx)).child(
+                        action(
+                            "database-selector",
+                            "",
+                            false,
+                            self.namespace_switch_allowed(),
+                            cx,
+                            |s, w, cx| s.show_databases(w, cx),
+                        )
+                        .justify_start()
+                        .w_full()
+                        .overflow_hidden()
+                        .child(icon(ui::IconName::Database).size(px(14.)))
+                        .child(
+                            div().flex_1().min_w_0().truncate().child(
+                                self.namespace
+                                    .snapshot
+                                    .as_ref()
+                                    .map(|c| c.database.clone())
+                                    .unwrap_or_else(|| "No database".into()),
+                            ),
+                        )
+                        .child(icon(ui::IconName::ChevronDown).size(px(12.)))
+                        .debug_selector(|| "database-selector".into()),
+                    )
+                },
+            )
             .child(label(
                 match behavior {
                     NamespaceBehavior::Databases => "Database · SQL context",
@@ -467,7 +782,9 @@ impl Workbench {
         let Some(p) = &self.namespace.picker else {
             return div().into_any_element();
         };
-        let switches_database = self.namespace_behavior() == NamespaceBehavior::Databases;
+        let reconnect = p.kind == PickerKind::Database;
+        let switches_database =
+            reconnect || self.namespace_behavior() == NamespaceBehavior::Databases;
         let names = self.namespace_choices(cx);
         let cursor = p.cursor.min(names.len().saturating_sub(1));
         let selected = names.get(cursor).cloned();
@@ -503,20 +820,24 @@ impl Workbench {
                 .child(
                     div()
                         .text_size(px(17.))
-                        .child(match self.namespace_behavior() {
+                        .child(if reconnect { "Choose database" } else { match self.namespace_behavior() {
                             NamespaceBehavior::Databases => "Choose database",
                             NamespaceBehavior::Schemas => "Choose explorer schema",
                             NamespaceBehavior::AttachedDatabases => "Choose attached database",
-                        }),
+                        }}),
                 )
                 .child(label(
-                    if switches_database {
+                    if reconnect {
+                        "Opens a new PostgreSQL session. SQL buffers stay open; the current connection is kept if switching fails."
+                    } else if switches_database {
                         "Changes this session's SQL database using USE."
                     } else {
                         "Filters explorer only. SQL name-resolution order stays unchanged."
                     },
                     cx,
                 ))
+                .when_some(p.error.clone(), |d, error| d.child(label(error, cx)))
+                .when(reconnect && self.busy, |d| d.child(label("Loading accessible databases…", cx)))
                 .child(
                     div()
                         .key_context("RowboatNamespace")
@@ -584,7 +905,9 @@ impl Workbench {
                         .flex_wrap()
                         .child(action(
                             "namespace-apply",
-                            if switches_database {
+                            if reconnect {
+                                "Switch database"
+                            } else if switches_database {
                                 "Use database"
                             } else {
                                 "Show namespace"

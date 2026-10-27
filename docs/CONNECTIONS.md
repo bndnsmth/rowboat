@@ -19,6 +19,17 @@ plus). Both open the same searchable, grouped browser. Search matches name, grou
 engine and database/file target. Browsing or cancelling does not create a workspace,
 connect, read passwords or execute SQL.
 
+When no workspace is open in the main window, this browser is the default screen:
+on a fresh start, after closing the last workspace, or after moving it to another
+window. Open workspaces and SQL drafts still restore normally. Closed workspaces
+stay archived until explicitly reopened; startup does not create an empty SQL draft.
+Escape from a form or removal confirmation returns to the browser. With no main
+workspace, Escape stays in the browser rather than revealing an empty screen; use
+the native window close action to quit. An idle profile form first returns to the
+browser; in-flight writes must finish before closing. Normal recovery/transaction
+close guards still cover all windows. The default browser does not raise the main
+window or block live workspaces in other windows.
+
 - **Open workspace** opens the selected profile; **Switch to workspace** activates
   its retained session, including a separate window. Existing SQL/results and
   transactions are preserved. An offline retained workspace is not reconnected.
@@ -36,13 +47,65 @@ connect, read passwords or execute SQL.
 Saved connections are application-level; the sidebar is for the active database,
 SQL editor, saved queries and history.
 
+### Paste a connection URL
+
+In **New connection** or **Edit**, click **Paste URL** to read and parse the
+clipboard, or paste into **Connection URL** and press Enter / **Fill fields**.
+`postgres://`, `postgresql://` and `mysql://` select the engine automatically and
+populate the host, port, database, username, password and supported TLS options.
+Test, Save and Save & Connect also parse a pending URL before continuing.
+
+The URL input is masked and cleared after parsing. Parsing alone neither saves nor
+connects. Custom names/groups and read-only/SSH policy are preserved. An absent URL
+password clears the previous password; imported passwords remain in memory unless
+you explicitly enable Remember. Percent-encoded credential bytes, including line
+breaks, are retained exactly even when the single-line password field cannot show
+them. Editing that field replaces the imported value. Invalid URLs leave the form's
+connection fields unchanged and never echo credential-bearing input in errors.
+
+### Database and schema selection
+
+- **MySQL:** the database selector changes the session with `USE`, as before.
+- **PostgreSQL:** **Database · connection** lists accessible databases on the
+  server; **Schema · explorer filter** independently scopes the current database's
+  explorer without changing SQL `search_path`.
+- PostgreSQL **Switch database** opens and verifies a fresh connection using the
+  same credentials, TLS, SSH and read-only settings. The old connection is retained
+  until success. SQL tabs and their existing result context labels stay intact;
+  old edit authorization is invalidated and no SQL is replayed. Session-local
+  settings and temporary objects do not transfer to the new connection.
+- Finish transactions, running operations and staged/unstaged row edits before
+  switching. Transaction state is rechecked on the server before reconnection.
+- **Open database in new workspace** works for both network engines and retains
+  the original physical session. The derived saved profile has a separate ID;
+  passwords are never written to profile JSON. Switching within a workspace does
+  not overwrite the saved profile's default database.
+
 ## Native connection checks and recovery
 
-**Test connection** checks the current draft using a separate temporary connection.
-It leaves saved profiles/passwords and the active workspace unchanged, and never
-executes editor SQL. Tests are bounded to 20 seconds and are cancelled when the form
-closes or its engine changes. SQLite tests open existing files only, even when the
-draft selects **Create if missing**.
+Test/Save/Connect validate the form before network access. Invalid fields are
+outlined with inline guidance; the first invalid field receives focus and scrolls
+into view, including fields inside TLS/SSH settings. URL-option errors list the
+supported options without repeating credential-bearing values.
+
+**Test connection** shows a green form outline and **Connection verified** banner
+on success, or a red outline and failure banner. This verifies only the tested
+draft: changing settings removes the feedback and requires another test. Testing
+never saves a profile, replaces the live workspace, creates a SQLite file or runs
+editor SQL. Connection failures offer credential-free guidance for authentication,
+DNS, refused connections, timeouts, TLS and SSH trust/authentication/forwarding.
+Unknown failures remain generic rather than claiming an unproven cause.
+
+The persistent workspace header shows the profile's group/name, original host/port
+or SQLite path, live database, and read-only policy. For PostgreSQL, **SQL schema**
+is the last verified `current_schema()` (not the full `search_path`); a different
+**explorer** schema is labeled separately. Long targets have full-text tooltips;
+disconnected/unverified contexts are explicitly labeled. SSH transport addresses
+are not substituted for the original database host.
+
+Tests use a separate temporary connection, are bounded to 20 seconds, and are
+cancelled when the form closes or its connection settings change. SQLite tests
+open existing files only, even when the draft selects **Create if missing**.
 
 **Save & Connect** explicitly saves the draft before opening its workspace. Failed
 handshakes expose connection recovery/settings. Clicking the selected engine leaves its fields intact;

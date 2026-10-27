@@ -819,3 +819,165 @@ fn close_main_covers_satellites_and_rejects_stale_satellite_close_epoch(cx: &mut
     h.finish_shutdown(cx);
     assert!(!alive(cx, satellite));
 }
+
+fn single_draft() -> SessionState {
+    SessionState {
+        version: crate::session::FORMAT_VERSION,
+        active_tab: 9,
+        tabs: vec![TabBuffer {
+            id: 9,
+            connection_id: None,
+            title: "Only draft".into(),
+            sql: "SELECT 'keep my SQL'".into(),
+        }],
+        ..Default::default()
+    }
+}
+
+#[gpui_kit::test]
+fn close_connection_home_waits_for_checkpoint_and_both_writer_acks(cx: &mut TestAppContext) {
+    let runtime = crate::app_runtime::AppRuntime::new().unwrap();
+    let mut h = Harness::new(cx, runtime.handle(), Some(SessionState::default()));
+    assert!(h.workspaces.is_empty());
+    assert!(visible(cx, h.window, "connection-manager"));
+    h.request(cx, None);
+    let (revision, snapshot) = h.checkpoint();
+    assert!(snapshot.tabs.is_empty() && snapshot.workspaces.is_empty());
+    assert!(!visible(cx, h.window, "connection-manager"));
+    assert!(alive(cx, h.window));
+    h.ack(revision);
+    h.tick(cx);
+    h.finish_shutdown(cx);
+}
+
+#[gpui_kit::test]
+fn close_connection_home_respects_busy_forms_and_cancel_returns_to_browser(
+    cx: &mut TestAppContext,
+) {
+    let runtime = crate::app_runtime::AppRuntime::new().unwrap();
+    let mut h = Harness::new(cx, runtime.handle(), Some(SessionState::default()));
+    click(cx, h.window, "manager-new");
+    let editor = cx.read(|cx| h.shell.read(cx).test_manager_editor().unwrap());
+    cx.update(|cx| editor.update(cx, |s, _| s.busy = true));
+    h.request(cx, None);
+    cx.read(|cx| assert!(h.shell.read(cx).test_manager_editor().is_some()));
+    h.assert_no_shutdown();
+    cx.update(|cx| editor.update(cx, |s, _| s.busy = false));
+    h.request(cx, None); // Idle form backs out before quitting.
+    assert!(visible(cx, h.window, "connection-manager"));
+    cx.read(|cx| assert!(h.shell.read(cx).test_manager_editor().is_none()));
+    h.assert_no_shutdown();
+    h.recovery.close();
+    h.request(cx, None);
+    assert!(visible(cx, h.window, "workspace-close-guard"));
+    click(cx, h.window, "keep-workspaces");
+    assert!(visible(cx, h.window, "connection-manager"));
+    assert!(h.tick(cx).is_empty());
+    h.assert_no_shutdown();
+}
+
+#[gpui_kit::test]
+fn close_last_main_workspace_opens_connections_and_keeps_reopenable_sql(cx: &mut TestAppContext) {
+    let runtime = crate::app_runtime::AppRuntime::new().unwrap();
+    let mut h = Harness::new(cx, runtime.handle(), Some(single_draft()));
+    h.request(cx, Some(0));
+    let (revision, snapshot) = h.checkpoint();
+    assert!(!snapshot.workspaces[0].open);
+    assert_eq!(snapshot.tabs[0].sql, "SELECT 'keep my SQL'");
+    h.ack(revision);
+    assert!(h.tick(cx).is_empty());
+    assert!(visible(cx, h.window, "connection-manager"));
+    assert!(!visible(cx, h.window, "manager-close"));
+    click(cx, h.window, "manager-draft");
+    let reopened = h.tick(cx);
+    assert_eq!(reopened.len(), 1);
+    cx.read(|cx| {
+        let s = reopened[0].read(cx);
+        assert_eq!(s.tabs[0].id, 9);
+        assert_eq!(
+            s.tabs[0].editor.read(cx).value().as_ref(),
+            "SELECT 'keep my SQL'"
+        );
+        assert_eq!(s.query_run_invocations, 0);
+    });
+    assert!(!visible(cx, h.window, "connection-manager"));
+}
+
+#[gpui_kit::test]
+fn close_satellite_from_connection_home_keeps_browser_and_archives_sql(cx: &mut TestAppContext) {
+    let runtime = crate::app_runtime::AppRuntime::new().unwrap();
+    let mut h = Harness::new(cx, runtime.handle(), Some(single_draft()));
+    cx.update(|cx| {
+        h.workspaces[0].update(cx, |s, _| {
+            s.shell_tx
+                .send(Command::Move {
+                    route: s.tx.route,
+                    host_epoch: s.host_epoch,
+                })
+                .unwrap();
+        })
+    });
+    h.tick(cx);
+    let satellite = cx.read(|cx| {
+        h.shell
+            .read(cx)
+            .test_workspace_host(h.workspaces[0].read(cx).workspace_id)
+            .unwrap()
+    });
+    assert!(visible(cx, h.window, "connection-manager"));
+    cx.update(|cx| {
+        h.workspaces[0].update(cx, |s, _| {
+            s.shell_tx
+                .send(Command::CloseWindowWorkspace {
+                    id: s.workspace_id,
+                    host_epoch: s.host_epoch,
+                })
+                .unwrap();
+        })
+    });
+    h.tick(cx);
+    let (revision, snapshot) = h.checkpoint();
+    assert!(!snapshot.workspaces[0].open);
+    h.ack(revision);
+    assert!(h.tick(cx).is_empty());
+    assert!(!alive(cx, satellite));
+    assert!(visible(cx, h.window, "connection-manager"));
+    assert_eq!(snapshot.tabs[0].sql, "SELECT 'keep my SQL'");
+}
+
+#[gpui_kit::test]
+fn close_main_from_connection_home_still_guards_satellite_edits(cx: &mut TestAppContext) {
+    let runtime = crate::app_runtime::AppRuntime::new().unwrap();
+    let mut session = single_draft();
+    session.tabs[0].connection_id = Some("a".into());
+    let mut h = Harness::new(cx, runtime.handle(), Some(session));
+    cx.update(|cx| {
+        h.workspaces[0].update(cx, |s, _| {
+            s.shell_tx
+                .send(Command::Move {
+                    route: s.tx.route,
+                    host_epoch: s.host_epoch,
+                })
+                .unwrap();
+        })
+    });
+    h.tick(cx);
+    assert!(visible(cx, h.window, "connection-manager"));
+    stage(cx, &h.workspaces[0]);
+    h.request(cx, None);
+    assert!(visible(cx, h.window, "workspace-close-guard"));
+    cx.read(|cx| assert!(h.workspaces[0].read(cx).close_requested));
+    click(cx, h.window, "keep-workspaces");
+    assert!(visible(cx, h.window, "connection-manager"));
+    cx.read(|cx| {
+        let s = h.workspaces[0].read(cx);
+        assert!(!s.close_requested && !s.shared.borrow().shell_modal_open);
+    });
+    h.request(cx, None);
+    click(cx, h.window, "confirm-workspace-close");
+    let (revision, snapshot) = h.checkpoint();
+    assert_eq!(snapshot.workspaces[0].staged.len(), 1);
+    h.ack(revision);
+    h.tick(cx);
+    h.finish_shutdown(cx);
+}

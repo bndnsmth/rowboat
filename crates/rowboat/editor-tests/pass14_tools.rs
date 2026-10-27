@@ -28,23 +28,9 @@ pub(crate) fn workspace_with_preferences(
     Entity<crate::workspace_shell::WorkspaceShell>,
     Vec<Entity<Workbench>>,
 ) {
-    use crate::{
-        session::{SessionState, TabBuffer},
-        workspace_storage::{Event, Write, Writers},
-    };
-    let (state, mut state_rx) = tokio::sync::mpsc::unbounded_channel();
-    let (recovery, mut recovery_rx) = tokio::sync::mpsc::unbounded_channel();
-    let (tx, events) = std::sync::mpsc::channel();
-    tx.send(Event::StateLoaded(Ok(Box::new(
-        rowboat_services::AppState {
-            connections: profiles.clone(),
-            preferences,
-            ..Default::default()
-        },
-    ))))
-    .unwrap();
-    tx.send(Event::RecoveryLoaded(Ok(SessionState {
-        version: 4,
+    use crate::session::{SessionState, TabBuffer};
+    let recovery = SessionState {
+        version: crate::session::FORMAT_VERSION,
         active_tab: 1,
         tabs: profiles
             .iter()
@@ -57,8 +43,38 @@ pub(crate) fn workspace_with_preferences(
             })
             .collect(),
         ..Default::default()
-    })))
-    .unwrap();
+    };
+    workspace_with_session(
+        cx,
+        runtime,
+        rowboat_services::AppState {
+            connections: profiles,
+            preferences,
+            ..Default::default()
+        },
+        recovery,
+        Default::default(),
+    )
+}
+
+pub(crate) fn workspace_with_session(
+    cx: &mut TestAppContext,
+    runtime: tokio::runtime::Handle,
+    saved: rowboat_services::AppState,
+    session: crate::session::SessionState,
+    startup: crate::app::Startup,
+) -> (
+    AnyWindowHandle,
+    Entity<crate::workspace_shell::WorkspaceShell>,
+    Vec<Entity<Workbench>>,
+) {
+    use crate::workspace_storage::{Event, Write, Writers};
+    let profiles = saved.connections.clone();
+    let (state, mut state_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (recovery, mut recovery_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (tx, events) = std::sync::mpsc::channel();
+    tx.send(Event::StateLoaded(Ok(Box::new(saved)))).unwrap();
+    tx.send(Event::RecoveryLoaded(Ok(session))).unwrap();
     let state_tx = tx.clone();
     runtime.spawn(async move {
         while let Some(write) = state_rx.recv().await {
@@ -93,7 +109,7 @@ pub(crate) fn workspace_with_preferences(
             cx.new(|cx| {
                 crate::workspace_shell::WorkspaceShell::with_writers(
                     runtime,
-                    Default::default(),
+                    startup,
                     Writers {
                         state,
                         recovery,

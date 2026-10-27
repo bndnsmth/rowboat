@@ -31,7 +31,7 @@ pub use administrative::{
     QuerySession,
 };
 use anyhow::{Context, Result, anyhow, bail, ensure};
-pub use namespace::NamespaceCatalog;
+pub use namespace::{DatabaseCatalog, NamespaceCatalog};
 #[path = "query_edit.rs"]
 mod query_edit;
 pub use query_edit::{QueryEditCapture, QueryEditColumn, QueryEditPlan, QueryEditSource};

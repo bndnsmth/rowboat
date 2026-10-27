@@ -2,6 +2,8 @@
 #![allow(dead_code)] // Application entry points are intentionally not launched by TestPlatform.
 extern crate gpui_kit as gpui;
 mod close_lifecycle_tests;
+mod connection_navigation;
+mod connection_polish;
 #[path = "../src/connection_ui.rs"]
 mod connection_ui;
 mod gui_pass16;

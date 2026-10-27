@@ -19,8 +19,8 @@ pub use database::CompletionCatalog;
 pub use database::Database;
 pub use database::{
     AdministrativeMonitor, AdministrativeOperation, AdministrativeOutcome, AdministrativeStatus,
-    NamespaceCatalog, QueryEditCapture, QueryEditColumn, QueryEditPlan, QueryEditSource,
-    QuerySession,
+    DatabaseCatalog, NamespaceCatalog, QueryEditCapture, QueryEditColumn, QueryEditPlan,
+    QueryEditSource, QuerySession,
 };
 pub use filters::relationship_filter;
 pub use importer::{ImportBatch, ImportRow, RowImport, RowImportOptions};

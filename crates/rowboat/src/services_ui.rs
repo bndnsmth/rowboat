@@ -248,9 +248,7 @@ impl Workbench {
                             cx.notify();
                             return;
                         }
-                        form.password.update(cx, |p, cx| {
-                            p.set_value(password.clone().unwrap_or_default(), window, cx)
-                        });
+                        form.set_password(password.clone().unwrap_or_default(), window, cx);
                     }
                     let password = password.unwrap_or_default();
                     self.passwords.insert(id, password.clone());
@@ -276,8 +274,7 @@ impl Workbench {
                     form.remember = true;
                 }
                 if !form.password_dirty && form.password.read(cx).value().is_empty() {
-                    form.password
-                        .update(cx, |p, cx| p.set_value(password.clone(), window, cx));
+                    form.set_password(password.clone(), window, cx);
                     self.passwords.insert(id, password);
                 }
             }

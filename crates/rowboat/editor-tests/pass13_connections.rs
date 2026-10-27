@@ -447,6 +447,14 @@ fn pass13_connection_test_network_success_failure_preserves_session_and_storage(
             cx.read(|cx| {
                 let s = s.read(cx);
                 let message = &s.form.as_ref().unwrap().test_result.as_ref().unwrap().1;
+                assert_eq!(
+                    s.form.as_ref().unwrap().test_feedback(cx),
+                    Some(password == "rowboat-test")
+                );
+                if password != "rowboat-test" {
+                    assert!(message.contains("Authentication failed"), "{message}");
+                    assert!(!message.contains(password));
+                }
                 assert!(
                     message.contains(if password == "rowboat-test" {
                         "succeeded"

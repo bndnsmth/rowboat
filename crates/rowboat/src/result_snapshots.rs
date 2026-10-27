@@ -95,6 +95,8 @@ impl Drop for CompareWorker {
 }
 #[derive(Default)]
 pub struct ResultsState {
+    pub viewport_scroll: gpui_kit::ScrollHandle,
+    pub horizontal_scroll: gpui_kit::ScrollHandle,
     pub pins: Vec<Pin>,
     pub view: ResultsView,
     pub selected_row: usize,

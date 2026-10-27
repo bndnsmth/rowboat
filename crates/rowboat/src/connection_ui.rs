@@ -20,6 +20,7 @@ pub enum ConnectionEvent {
         request: uuid::Uuid,
         instance: uuid::Uuid,
         fingerprint: String,
+        success: bool,
         message: String,
     },
     Probed {
@@ -29,6 +30,36 @@ pub enum ConnectionEvent {
 }
 
 impl Workbench {
+    pub(crate) fn prepare_connection_action(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if !self.fill_connection_from_url(window, cx) {
+            return false;
+        }
+        let Some(form) = &mut self.form else {
+            return false;
+        };
+        form.validation_attempted = true;
+        if let Some((field, _)) = form.validation_errors(cx).first().copied() {
+            form.cancel_test();
+            if field.starts_with("ssl_") || field.starts_with("ssh_") {
+                form.advanced = true;
+            }
+            form.reveal_field = Some(field);
+            if field == "url" {
+                form.scroll.set_offset(point(px(0.), px(0.)));
+                form.url.update(cx, |i, cx| i.focus(window, cx));
+            } else {
+                form.fields[field].update(cx, |i, cx| i.focus(window, cx));
+            }
+            cx.notify();
+            return false;
+        }
+        self.error = None;
+        true
+    }
     pub(crate) fn connection_settings_enabled(&self) -> bool {
         !self.busy
             && !self.close_requested
@@ -64,6 +95,7 @@ impl Workbench {
         let Some(form) = &mut self.form else {
             return;
         };
+        form.validation_attempted = true;
         if form.test_request.is_some() || form.keyring_loading || form.file_request.is_some() {
             return;
         }
@@ -80,11 +112,13 @@ impl Workbench {
         let request = uuid::Uuid::new_v4();
         form.test_request = Some(request);
         form.test_result = None;
+        form.test_succeeded = false;
+        form.test_stale = false;
         let is_file = form.is_file();
         let password = if is_file {
             String::new()
         } else {
-            form.password.read(cx).value().to_string()
+            form.password_value(cx)
         };
         // A trial never creates a database, including when the draft says Create.
         if let Some(file) = &mut profile.file {
@@ -96,20 +130,22 @@ impl Workbench {
                 let (tunnel, endpoint) = if is_file {
                     (None, profile)
                 } else {
-                    let (tunnel, endpoint) = Tunnel::open(&profile).await?;
+                    let (tunnel, endpoint) = Tunnel::open(&profile).await.map_err(|e| rowboat_services::connection_issue(rowboat_services::ConnectionStage::Ssh, &e))?;
                     (Some(tunnel), endpoint)
                 };
-                let db = Database::connect(&endpoint, &password).await?;
+                let stage = if is_file { rowboat_services::ConnectionStage::File } else { rowboat_services::ConnectionStage::Database };
+                let db = Database::connect(&endpoint, &password).await.map_err(|e| rowboat_services::connection_issue(stage, &e))?;
                 drop(db);
                 drop(tunnel);
                 Ok::<_, anyhow::Error>(())
             }).await;
+            let success = matches!(&result, Ok(Ok(())));
             let message = match result {
                 Ok(Ok(())) => "Connection test succeeded · nothing saved; workspace unchanged".into(),
-                Ok(Err(error)) => format!("Connection test failed: {error:#}{}", if is_file { " · Test opens existing files only; no database was created." } else { " · Check host, port, credentials and TLS/SSH settings; nothing saved." }),
+                Ok(Err(error)) => format!("Connection test failed: {error} · nothing saved; workspace unchanged{}", if is_file { " · Test opens existing files only; no database was created." } else { "" }),
                 Err(_) => "Connection test timed out after 20 seconds · nothing saved; check reachability/TLS/SSH settings".into(),
             };
-            let _ = tx.send(Event::Connection(Box::new(ConnectionEvent::Tested { request, instance, fingerprint, message })));
+            let _ = tx.send(Event::Connection(Box::new(ConnectionEvent::Tested { request, instance, fingerprint, success, message })));
         });
         form.test_task = Some(task.abort_handle());
         cx.notify();
@@ -189,6 +225,7 @@ impl Workbench {
                 request,
                 instance,
                 fingerprint,
+                success,
                 message,
             } => {
                 if self.close_requested {
@@ -205,6 +242,7 @@ impl Workbench {
                 form.test_task = None;
                 if form.fingerprint(cx) == fingerprint {
                     form.test_result = Some((fingerprint, message));
+                    form.test_succeeded = success;
                 }
             }
             ConnectionEvent::Probed { request, active } => {

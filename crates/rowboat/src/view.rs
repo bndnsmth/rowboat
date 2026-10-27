@@ -1385,6 +1385,63 @@ impl Workbench {
         } else {
             footer = footer.child(label("F6 focus · Shift+Space row · Enter inspect", cx));
         }
+        // Scrolling alone does not paint scrollbars in GPUI. Keep both overlays
+        // outside the horizontally scrolled content so the vertical track stays
+        // at the visible right edge, even when the grid is thousands of pixels wide.
+        let header_height = 44_f32.max(grid_font_size * 3. + 8.);
+        let grid = div()
+            .relative()
+            .flex_1()
+            .min_h_0()
+            .overflow_hidden()
+            .child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .pr(px(12.))
+                    .pb(px(12.))
+                    .flex()
+                    .flex_col()
+                    .child(grid),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .top(px(header_height))
+                    .bottom(px(12.))
+                    .right_0()
+                    .w(px(12.))
+                    .debug_selector(|| "results-scrollbar-y".into())
+                    .child(
+                        ui::scrollbar(
+                            "results-scroll-y",
+                            gpui_kit::base::ScrollbarAxis::Vertical,
+                            &self.grid_scroll,
+                            window,
+                            cx,
+                        )
+                        .viewport_from_layout(),
+                    ),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .left_0()
+                    .right(px(12.))
+                    .bottom_0()
+                    .h(px(12.))
+                    .debug_selector(|| "results-scrollbar-x".into())
+                    .child(
+                        ui::scrollbar(
+                            "results-scroll-x",
+                            gpui_kit::base::ScrollbarAxis::Horizontal,
+                            &self.grid_x_scroll,
+                            window,
+                            cx,
+                        )
+                        .viewport_from_layout(),
+                    ),
+            );
         content.child(grid).child(footer).into_any_element()
     }
 
@@ -1926,14 +1983,80 @@ impl Workbench {
     ) -> AnyElement {
         let t = cx.omarchy().clone();
         let form = self.form.as_ref().unwrap();
+        let validation = if form.validation_attempted {
+            form.validation_errors(cx)
+        } else {
+            Vec::new()
+        };
+        let feedback = form.test_feedback(cx);
         let free = !self.busy;
         let field = |key: &'static str,
                      title: &'static str,
                      window: &mut Window,
                      cx: &mut Context<Self>| {
-            column().flex_1().gap_2().child(label(title, cx)).child(
-                ui::input(key, &form.fields[key], window, cx).debug_selector(move || key.into()),
-            )
+            let error = validation
+                .iter()
+                .find(|(field, _)| *field == key)
+                .map(|(_, message)| *message);
+            let reveal = form.reveal_field == Some(key);
+            let owner = cx.weak_entity();
+            let instance = form.instance;
+            column()
+                .flex_1()
+                .gap_2()
+                .child(label(title, cx))
+                .child(
+                    div()
+                        .border_1()
+                        .border_color(if error.is_some() {
+                            t.danger
+                        } else {
+                            transparent_black()
+                        })
+                        .child(
+                            ui::input(key, &form.fields[key], window, cx)
+                                .debug_selector(move || key.into()),
+                        ),
+                )
+                .when_some(error, |d, message| {
+                    d.child(
+                        div()
+                            .text_size(px(11.))
+                            .text_color(t.danger)
+                            .child(message)
+                            .debug_selector(move || format!("connection-error-{key}")),
+                    )
+                })
+                .when(reveal, |d| {
+                    d.on_children_prepainted(move |bounds, _, cx| {
+                        let (Some(first), Some(last)) = (bounds.first(), bounds.last()) else {
+                            return;
+                        };
+                        let top = first.top();
+                        let bottom = last.bottom();
+                        let owner = owner.clone();
+                        cx.defer(move |cx| {
+                            let _ = owner.update(cx, |s, cx| {
+                                let Some(f) = s.form.as_mut().filter(|f| {
+                                    f.instance == instance && f.reveal_field == Some(key)
+                                }) else {
+                                    return;
+                                };
+                                let viewport = f.scroll.bounds();
+                                let mut offset = f.scroll.offset();
+                                if top < viewport.top() {
+                                    offset.y += viewport.top() - top;
+                                } else if bottom > viewport.bottom() {
+                                    offset.y -= bottom - viewport.bottom();
+                                }
+                                offset.y = offset.y.clamp(-f.scroll.max_offset().y, px(0.));
+                                f.scroll.set_offset(offset);
+                                f.reveal_field = None;
+                                cx.notify();
+                            });
+                        });
+                    })
+                })
         };
         let mut engines = row().gap_3();
         for (id, engine) in [
@@ -1997,6 +2120,68 @@ impl Workbench {
             )
             .child(engines)
             .child(
+                column()
+                    .gap_2()
+                    .child(
+                        row()
+                            .flex_wrap()
+                            .child(label("CONNECTION URL (OPTIONAL)", cx))
+                            .child(div().flex_1())
+                            .child(
+                                action(
+                                    "paste-connection-url",
+                                    "Paste URL",
+                                    false,
+                                    free,
+                                    cx,
+                                    |s, w, cx| s.paste_connection_url(w, cx),
+                                )
+                                .debug_selector(|| "paste-connection-url".into()),
+                            ),
+                    )
+                    .child(
+                        row()
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .capture_key_down(cx.listener(|s, e: &KeyDownEvent, w, cx| {
+                                        if e.keystroke.key == "enter"
+                                            && !e.keystroke.modifiers.modified()
+                                        {
+                                            s.fill_connection_from_url(w, cx);
+                                            cx.stop_propagation();
+                                        }
+                                    }))
+                                    .child(
+                                        ui::input("connection-url-input", &form.url, window, cx)
+                                            .border_color(if form.url_error.is_some() {
+                                                t.danger
+                                            } else {
+                                                t.control_border()
+                                            })
+                                            .debug_selector(|| "connection-url-input".into()),
+                                    ),
+                            )
+                            .child(
+                                action(
+                                    "fill-connection-url",
+                                    "Fill fields",
+                                    false,
+                                    free,
+                                    cx,
+                                    |s, w, cx| {
+                                        s.fill_connection_from_url(w, cx);
+                                    },
+                                )
+                                .debug_selector(|| "fill-connection-url".into()),
+                            ),
+                    )
+                    .when_some(form.url_error.clone(), |d, error| {
+                        d.child(div().text_color(t.danger).child(error))
+                    }),
+            )
+            .child(
                 row()
                     .gap_4()
                     .child(field("name", "CONNECTION NAME", window, cx))
@@ -2020,6 +2205,7 @@ impl Workbench {
                                     if let Some(f) = &mut s.form {
                                         f.file_mode = SqliteOpenMode::OpenExisting;
                                         f.file_request = None;
+                                        f.draft_changed();
                                     }
                                     cx.notify();
                                 },
@@ -2038,6 +2224,7 @@ impl Workbench {
                                     if let Some(f) = &mut s.form {
                                         f.file_mode = SqliteOpenMode::CreateIfMissing;
                                         f.file_request = None;
+                                        f.draft_changed();
                                     }
                                     cx.notify();
                                 },
@@ -2082,6 +2269,7 @@ impl Workbench {
                                 f.file_mode = SqliteOpenMode::OpenExisting;
                             }
                             f.file_request = None;
+                            f.draft_changed();
                         }
                         cx.notify();
                     },
@@ -2090,8 +2278,11 @@ impl Workbench {
             body = body.child(row().gap_4().child(field("host","HOST",window,cx)).child(div().w(px(125.)).child(field("port","PORT",window,cx))))
             .child(row().gap_4().child(field("database","DATABASE",window,cx)).child(field("username","USERNAME",window,cx)))
             .child(column().gap_2().child(label("PASSWORD",cx)).child(ui::input("connection-password",&form.password,window,cx).debug_selector(||"connection-password".into())).child(label("Memory-only by default. Remembered passwords use the system keyring, never connection or recovery JSON files.",cx)))
-            .child(row().child(action("toggle-read-only",if form.read_only{"☑  Read-only session"}else{"☐  Read-only session"},false,free,cx,|s,_,cx|{if let Some(f)=&mut s.form{f.read_only = !f.read_only;}cx.notify();})).child(div().flex_1())
+            .child(row().child(action("toggle-read-only",if form.read_only{"☑  Read-only session"}else{"☐  Read-only session"},false,free,cx,|s,_,cx|{if let Some(f)=&mut s.form{f.read_only = !f.read_only;f.draft_changed();}cx.notify();})).child(div().flex_1())
                 .child(action("toggle-advanced",if form.advanced{"▴  TLS & SSH"}else{"▾  TLS & SSH"},false,true,cx,|s,_,cx|{if let Some(f)=&mut s.form{f.advanced = !f.advanced;}cx.notify();})));
+        }
+        if form.has_exact_password() {
+            body = body.child(label("The imported password is retained exactly in memory, including characters this single-line field cannot display. Changing the password replaces the imported value.", cx));
         }
         if !form.is_file() && form.advanced {
             body = body
@@ -2122,6 +2313,7 @@ impl Workbench {
                     |s, _, cx| {
                         if let Some(f) = &mut s.form {
                             f.ssh = !f.ssh;
+                            f.draft_changed();
                         }
                         cx.notify();
                     },
@@ -2148,6 +2340,7 @@ impl Workbench {
                             if let Some(f) = &mut s.form {
                                 f.remember = !f.remember;
                                 f.remember_touched = true;
+                                f.draft_changed();
                             }
                             cx.notify();
                         },
@@ -2202,7 +2395,11 @@ impl Workbench {
                         && form.file_request.is_none()
                         && form.test_request.is_none(),
                     cx,
-                    |s, _, cx| s.test_connection(cx),
+                    |s, w, cx| {
+                        if s.prepare_connection_action(w, cx) {
+                            s.test_connection(cx);
+                        }
+                    },
                 )
                 .debug_selector(|| "test-connection".into()),
             )
@@ -2213,7 +2410,11 @@ impl Workbench {
                     false,
                     free && self.loaded && !form.keyring_loading && form.file_request.is_none(),
                     cx,
-                    |s, _, cx| s.save_connection(false, cx),
+                    |s, w, cx| {
+                        if s.prepare_connection_action(w, cx) {
+                            s.save_connection(false, cx);
+                        }
+                    },
                 )
                 .debug_selector(|| "save-connection".into()),
             )
@@ -2231,7 +2432,10 @@ impl Workbench {
                         && form.file_request.is_none()
                         && (self.transaction_known || form.confirm_replace),
                     cx,
-                    |s, _, cx| {
+                    |s, w, cx| {
+                        if !s.prepare_connection_action(w, cx) {
+                            return;
+                        }
                         if s.transaction_known {
                             s.save_connection(true, cx);
                         } else {
@@ -2249,21 +2453,73 @@ impl Workbench {
                 })
             })
             .child(footer);
-        if let Some((fingerprint, message)) = &form.test_result
-            && *fingerprint == form.fingerprint(cx)
+        if let Some(success) = feedback
+            && let Some((_, message)) = &form.test_result
         {
             footer = footer.child(
-                div()
+                column()
                     .id("connection-test-result")
-                    .max_h(px(90.))
+                    .debug_selector(|| "connection-test-result".into())
+                    .max_h(px(130.))
                     .overflow_y_scroll()
-                    .px_3()
-                    .pb_3()
+                    .p_3()
+                    .gap_1()
+                    .border_t_1()
+                    .border_color(if success { t.success } else { t.danger })
+                    .bg(if success {
+                        t.success.opacity(0.10)
+                    } else {
+                        t.danger.opacity(0.10)
+                    })
+                    .child(
+                        row()
+                            .child(icon(if success {
+                                ui::IconName::Check
+                            } else {
+                                ui::IconName::Info
+                            }))
+                            .text_color(if success { t.success } else { t.danger })
+                            .child(div().font_weight(FontWeight::SEMIBOLD).child(if success {
+                                "Connection verified"
+                            } else {
+                                "Connection test failed"
+                            }))
+                            .debug_selector(move || {
+                                if success {
+                                    "connection-test-success".into()
+                                } else {
+                                    "connection-test-failure".into()
+                                }
+                            }),
+                    )
                     .child(label(message.clone(), cx)),
+            );
+        } else if form.test_request.is_some() {
+            footer = footer.child(crate::loading_ui::header(
+                "Testing a temporary connection · nothing saved",
+                window,
+                cx,
+            ));
+        } else if form.test_stale || form.test_result.is_some() {
+            footer = footer.child(
+                label(
+                    "Connection settings changed · test again to verify this target.",
+                    cx,
+                )
+                .px_3()
+                .pb_3(),
             );
         }
         self.modal(
             column()
+                .id("connection-form-frame")
+                .debug_selector(|| "connection-form-frame".into())
+                .border_2()
+                .border_color(match feedback {
+                    Some(true) => t.success.opacity(0.8),
+                    Some(false) => t.danger.opacity(0.8),
+                    None => t.divider(),
+                })
                 .w(px(680.).min(window.viewport_size().width - px(64.)))
                 .h((window.viewport_size().height - px(120.)).max(px(240.)))
                 .child(
@@ -2272,6 +2528,7 @@ impl Workbench {
                         .flex_1()
                         .min_h_0()
                         .overflow_y_scroll()
+                        .track_scroll(&form.scroll)
                         .child(body),
                 )
                 .child(footer)

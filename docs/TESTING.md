@@ -34,6 +34,17 @@ cargo fmt --manifest-path crates/rowboat/editor-tests/Cargo.toml -- --check
 Its additional network cases also remain opt-in. TestPlatform success does not
 replace native keyboard, rendering, connection and file-dialog acceptance.
 
+`connection_polish` covers inline validation/focus and revealing advanced errors,
+real disposable SQLite test success/failure, stale-feedback invalidation, original
+host/live-schema context, and clicking/dragging the results scrollbars without SQL
+execution. `connection_navigation` covers URL import and live PostgreSQL database
+switching; `pass8_tests` retains the MySQL/namespace navigation regressions.
+`pass20_connections` and `close_lifecycle_tests` cover the empty-main-window
+Connections default, archived-only recovery, restored drafts/explicit startup SQL,
+last-workspace close/move, satellite commands/rehosting, browser/form cancellation,
+and guarded shutdown with writer acknowledgements. These use injected writers and
+disposable recovery/SQLite data, never saved user connections.
+
 ## Disposable server fixtures
 
 Requires rootless Podman and the cached `postgres:18` / `mysql:8.4` images. Scripts

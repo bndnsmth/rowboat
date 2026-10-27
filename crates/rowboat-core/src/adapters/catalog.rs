@@ -113,6 +113,36 @@ async fn metadata(conn: &mut Conn, sql: &str, params: &[Cell]) -> Result<QueryRe
     );
     Ok(rows)
 }
+pub(crate) async fn database_snapshot(conn: &mut Conn) -> Result<DatabaseCatalog> {
+    let (database, sql) = match conn {
+        Conn::Pg(c) => (
+            sqlx::query_scalar::<_, String>("SELECT current_database()")
+                .fetch_one(c)
+                .await?,
+            "SELECT datname FROM pg_catalog.pg_database WHERE datallowconn AND NOT datistemplate AND has_database_privilege(oid,'CONNECT') ORDER BY datname LIMIT 10001",
+        ),
+        Conn::My(c) => (
+            sqlx::query_scalar::<_, Option<String>>("SELECT DATABASE()")
+                .fetch_one(c)
+                .await?
+                .unwrap_or_default(),
+            "SELECT SCHEMA_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME NOT IN ('information_schema','performance_schema','mysql','sys') OR SCHEMA_NAME=DATABASE() ORDER BY SCHEMA_NAME LIMIT 10001",
+        ),
+        Conn::Sqlite(_) => bail!("SQLite uses file connections and attached databases"),
+        Conn::Closed => bail!("Connection closed; reconnect required"),
+    };
+    let databases = metadata(conn, sql, &[])
+        .await?
+        .rows
+        .into_iter()
+        .map(|row| text(&row[0]))
+        .collect();
+    Ok(DatabaseCatalog {
+        database,
+        databases,
+    })
+}
+
 pub(crate) async fn namespace_snapshot(
     conn: &mut Conn,
     engine: Engine,

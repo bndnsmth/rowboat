@@ -13,6 +13,11 @@ pub(super) struct Manager {
     return_focus: Option<FocusHandle>,
     _filter_subscription: Subscription,
 }
+impl Manager {
+    pub(super) fn has_pending_dialog(&self) -> bool {
+        self.editor.is_some() || self.removal.is_some()
+    }
+}
 struct Editor {
     entity: Entity<Workbench>,
     original: Option<ConnectionProfile>,
@@ -61,8 +66,29 @@ fn button(
 }
 
 impl WorkspaceShell {
+    pub(super) fn has_main_workspace(&self) -> bool {
+        self.workspaces
+            .iter()
+            .any(|workspace| workspace.host.is_none())
+    }
+    pub(super) fn connection_manager_blocks_workspaces(&self) -> bool {
+        self.connection_manager
+            .as_ref()
+            .is_some_and(|manager| self.has_main_workspace() || manager.has_pending_dialog())
+    }
+    pub(super) fn ensure_connection_manager(&mut self, w: &mut Window, cx: &mut Context<Self>) {
+        if !self.has_main_workspace() {
+            // The empty main window is a browser, not a modal over satellite
+            // workspaces. Do not raise this window or freeze their live sessions.
+            self.open_connection_manager(false, w, cx);
+        }
+    }
     pub(super) fn show_connection_manager(&mut self, w: &mut Window, cx: &mut Context<Self>) {
+        self.open_connection_manager(true, w, cx);
+    }
+    fn open_connection_manager(&mut self, activate: bool, w: &mut Window, cx: &mut Context<Self>) {
         if !self.initialized
+            || self.shutting_down
             || self.closing.is_some()
             || self.restore.is_some()
             || self.live_diff.is_some()
@@ -70,12 +96,17 @@ impl WorkspaceShell {
             return;
         }
         if self.connection_manager.is_some() {
+            if activate {
+                w.activate_window();
+            }
             return;
         }
-        if self.workspaces.iter().any(|workspace| {
-            let s = workspace.entity.read(cx);
-            s.modal_open() || s.has_row_draft() || s.close_requested
-        }) {
+        if activate
+            && self.workspaces.iter().any(|workspace| {
+                let s = workspace.entity.read(cx);
+                s.modal_open() || s.has_row_draft() || s.close_requested
+            })
+        {
             self.error = Some(
                 "Finish or close the open workspace dialog before managing connections.".into(),
             );
@@ -102,12 +133,14 @@ impl WorkspaceShell {
             return_focus,
             _filter_subscription: subscription,
         });
-        self.shared.borrow_mut().shell_modal_open = true;
-        w.activate_window();
+        self.shared.borrow_mut().shell_modal_open = self.connection_manager_blocks_workspaces();
+        if activate {
+            w.activate_window();
+        }
         filter.update(cx, |s, cx| s.focus(w, cx));
         cx.notify();
     }
-    fn manager_busy(&self, cx: &App) -> bool {
+    pub(super) fn manager_busy(&self, cx: &App) -> bool {
         self.connection_manager.as_ref().is_some_and(|m| {
             m.removal.as_ref().is_some_and(|r| r.request.is_some())
                 || m.editor.as_ref().is_some_and(|e| e.entity.read(cx).busy)
@@ -117,11 +150,16 @@ impl WorkspaceShell {
         if self.manager_busy(cx) {
             return;
         }
+        let home = !self.has_main_workspace();
         let Some(manager) = &mut self.connection_manager else {
             return;
         };
         if manager.removal.take().is_some() || manager.editor.take().is_some() {
             manager.error = None;
+            manager.filter.update(cx, |s, cx| s.focus(w, cx));
+        } else if home {
+            // There is no workspace to return to. Escape stays on Connections;
+            // the native window close action still runs the normal close guard.
             manager.filter.update(cx, |s, cx| s.focus(w, cx));
         } else {
             let focus = manager.return_focus.clone();
@@ -133,6 +171,7 @@ impl WorkspaceShell {
                 self.activate(self.active, w, cx);
             }
         }
+        self.shared.borrow_mut().shell_modal_open = self.connection_manager_blocks_workspaces();
         cx.notify();
     }
     fn profile_current(&self, profile: &ConnectionProfile) -> bool {
@@ -208,6 +247,7 @@ impl WorkspaceShell {
             // Even an offline retained workspace is only activated. Never replace
             // its physical session, pending form, SQL or results from the browser.
             self.activate(id, w, cx);
+            self.ensure_connection_manager(w, cx);
             return;
         }
         let archive = self
@@ -233,6 +273,7 @@ impl WorkspaceShell {
             cx,
         );
         self.activate(id, w, cx);
+        self.ensure_connection_manager(w, cx);
     }
     fn manager_draft(&mut self, w: &mut Window, cx: &mut Context<Self>) {
         if self
@@ -258,6 +299,7 @@ impl WorkspaceShell {
             self.create_workspace(None, tabs, layout, Startup::default(), w, cx)
         };
         self.activate(id, w, cx);
+        self.ensure_connection_manager(w, cx);
     }
     fn profile_form_owner(&mut self, w: &mut Window, cx: &mut Context<Self>) -> Entity<Workbench> {
         let id = self.next_workspace;
@@ -303,6 +345,7 @@ impl WorkspaceShell {
             connect: false,
             _observer: observer,
         });
+        self.shared.borrow_mut().shell_modal_open = true;
         cx.notify();
     }
     fn manager_transfer(&mut self, import: bool, w: &mut Window, cx: &mut Context<Self>) {
@@ -330,6 +373,7 @@ impl WorkspaceShell {
             connect: false,
             _observer: observer,
         });
+        self.shared.borrow_mut().shell_modal_open = true;
         cx.notify();
     }
     pub(super) fn manager_save(
@@ -424,6 +468,7 @@ impl WorkspaceShell {
         } else {
             manager.filter.update(cx, |s, cx| s.focus(w, cx));
         }
+        self.shared.borrow_mut().shell_modal_open = self.connection_manager_blocks_workspaces();
         cx.notify();
     }
     fn manager_remove(
@@ -448,6 +493,7 @@ impl WorkspaceShell {
             profile,
             request: None,
         });
+        self.shared.borrow_mut().shell_modal_open = true;
         w.focus(&self.modal_focus, cx);
         cx.notify();
     }
@@ -492,6 +538,7 @@ impl WorkspaceShell {
         } else {
             self.manager_removed(request, Ok(()), w, cx);
         }
+        self.shared.borrow_mut().shell_modal_open = self.connection_manager_blocks_workspaces();
         cx.notify();
     }
     pub(super) fn manager_removed(
@@ -541,6 +588,7 @@ impl WorkspaceShell {
             );
             m.filter.update(cx, |s, cx| s.focus(w, cx));
         }
+        self.shared.borrow_mut().shell_modal_open = self.connection_manager_blocks_workspaces();
         cx.notify();
     }
 
@@ -760,13 +808,27 @@ impl WorkspaceShell {
                             .child("Connections"),
                     )
                     .child(div().flex_1())
-                    .child(
-                        button("manager-close", "Close · Esc", false, cx)
-                            .disabled(busy)
-                            .debug_selector(|| "manager-close".into())
-                            .on_click(
-                                cx.listener(|s, _, w, cx| s.dismiss_connection_manager(w, cx)),
-                            ),
+                    .when(
+                        self.has_main_workspace() || manager.removal.is_some(),
+                        |d| {
+                            d.child(
+                                button(
+                                    "manager-close",
+                                    if manager.removal.is_some() {
+                                        "Back · Esc"
+                                    } else {
+                                        "Close · Esc"
+                                    },
+                                    false,
+                                    cx,
+                                )
+                                .disabled(busy)
+                                .debug_selector(|| "manager-close".into())
+                                .on_click(
+                                    cx.listener(|s, _, w, cx| s.dismiss_connection_manager(w, cx)),
+                                ),
+                            )
+                        },
                     ),
             )
             .when(manager.removal.is_none(), |d| {
@@ -817,7 +879,8 @@ impl WorkspaceShell {
                 .bg(t.background.opacity(1.)).text_size(px(13.)).border_1().border_color(t.border).rounded(px(8.)).shadow_lg()
                 .child(header)
                 .child(body.id("manager-list").debug_selector(|| "manager-list".into()).track_scroll(&manager.scroll).flex_1().min_h_0().overflow_y_scroll())
-                .when_some(manager.error.clone(), |d, error| d.child(div().px_4().py_2().text_color(t.danger).child(error)))
+                 .when_some(manager.error.clone(), |d, error| d.child(div().px_4().py_2().text_color(t.danger).child(error)))
+                 .when_some(self.error.clone().filter(|_| !self.has_main_workspace()), |d, error| d.child(div().px_4().py_2().text_color(t.danger).child(error)))
                 .when_some(manager.message.clone().filter(|_| manager.error.is_none()), |d, message| d.child(label(message, cx).px_4().py_2()))
                 .when(!writable, |d| d.child(label("Profile storage is read-only or unavailable. Browsing and switching workspaces remain available.", cx).px_4().py_2()))
                 .child(footer)).into_any_element()

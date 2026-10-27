@@ -320,6 +320,10 @@ fn validate_text(value: &str, label: &str, required: bool) -> Result<()> {
     Ok(())
 }
 
+pub fn validate_connection_host(host: &str) -> Result<()> {
+    canonical_host(host).map(|_| ())
+}
+
 fn canonical_host(host: &str) -> Result<String> {
     if let Ok(address) = host.parse::<IpAddr>() {
         return Ok(address.to_string());
@@ -586,7 +590,9 @@ pub fn parse_connection_url(input: &str) -> Result<ParsedConnectionUrl> {
                 (Engine::Postgres, "sslrootcert") | (Engine::MySql, "ssl-ca") => "ca",
                 (Engine::Postgres, "sslcert") | (Engine::MySql, "ssl-cert") => "cert",
                 (Engine::Postgres, "sslkey") | (Engine::MySql, "ssl-key") => "key",
-                _ => bail!("Unsupported connection URL option"),
+                _ => bail!(
+                    "Unsupported connection URL option. Supported options: sslmode, sslrootcert/ssl-ca, sslcert/ssl-cert and sslkey/ssl-key (certificate option names depend on the engine). Remove other options or configure supported settings in the form."
+                ),
             };
             ensure!(seen.insert(field), "Duplicate connection URL option");
             match field {
