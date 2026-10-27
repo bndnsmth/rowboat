@@ -1,7 +1,7 @@
-# Replace OWNER with the GitHub repository owner. Publish the reviewed GitHub
-# release first: mise intentionally does not list drafts.
-[tools."github:OWNER/rowboat"]
-version = "latest"
+# Explicit archive-selection example for the published Rowboat releases.
+# Mise intentionally does not list draft releases.
+[tools."github:bndnsmth/rowboat"]
+version = "0.1.0"
 matching_regex = '^rowboat-.*-(x86_64|aarch64)-(unknown-linux-gnu|apple-darwin)\.tar\.gz$'
 strip_components = 1
 bin_path = "bin"

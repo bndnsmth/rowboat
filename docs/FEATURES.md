@@ -6,11 +6,13 @@ This page describes implemented capabilities, not full parity with other tools.
 
 ## Platform status
 
-- **Linux:** local build, native Wayland workflows, packaging, installation and
-  mise GitHub-backend installation have been exercised.
-- **macOS:** Intel/Apple Silicon CI jobs, native Keychain integration and `.app`
-  packaging are implemented. The first hosted build and native GUI, Keychain,
-  SSH/TLS acceptance remain required. Bundles are ad-hoc signed, not notarized.
+- **Linux:** x86-64/ARM64 native CI passes builds, tests, packaging, installation,
+  mise GitHub-backend checks and isolated GUI startup. Native Wayland workflows
+  have also been exercised locally.
+- **macOS:** Intel/Apple Silicon native CI passes the same distribution checks,
+  including `.app` packaging and GUI startup. The Apple Silicon GUI has also been
+  tested on a real Mac. Native Keychain authorization/roundtrip, SSH/TLS and broader
+  interactive acceptance remain outstanding. Bundles are ad-hoc signed, not notarized.
 - **Windows:** not a launch target.
 
 Linux CI targets glibc 2.35; GUI desktop libraries and graphics drivers remain

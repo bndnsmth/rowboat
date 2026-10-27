@@ -35,25 +35,29 @@ are recorded in `docs/*-libraries.txt`.
 
 ## Install using mise
 
-After a release is reviewed and published on GitHub (replace `OWNER`):
+Install **both `rowboat` and `rowboatctl`** from the
+[published GitHub releases](https://github.com/bndnsmth/rowboat/releases):
 
 ```sh
-mise use -g github:OWNER/rowboat@latest
-# Or pin a version:
-mise use -g github:OWNER/rowboat@0.1.0
+mise use -g github:bndnsmth/rowboat@0.1.0
 rowboatctl --help
+rowboatctl skills get core
 rowboat
 ```
 
 The GitHub backend picks the OS/CPU archive, verifies the published checksum,
 strips its enclosing directory and exposes `bin/`. Both commands are installed
-together. No custom mise plugin or crates.io publication is required.
+together. The CLI is independent of the GUI and includes an offline agent guide:
+`rowboatctl skills get core --full`. No custom mise plugin or crates.io publication
+is required.
 
 For explicit archive selection, see `packaging/mise.example.toml`. Its
 `strip_components = 1` and `bin_path = "bin"` also document the archive contract.
 Mise does **not** run `install.sh`, create a Linux desktop launcher, or copy the
 macOS app into Applications. Use the manual installer for those integrations.
 Draft releases are deliberately invisible to mise.
+Mise's default 24-hour minimum release age can also hide a newly published release
+from `@latest`; an explicit version pin installs it without weakening that policy.
 
 ## Manual installation
 

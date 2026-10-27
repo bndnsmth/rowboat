@@ -49,24 +49,33 @@ Tokyo Night, and keep it. No theme downloads. No desktop settings changed.
 
 ## Get started
 
-**Linux and macOS are the distribution targets.** GitHub Actions builds native
-x86-64 and ARM64 archives for both. Local runtime verification is currently
-Linux/Wayland; macOS needs its first successful CI run and native acceptance.
-Windows is out of scope for this launch. See the [installation and release
-guide](docs/DISTRIBUTION.md) and [coverage and limitations](docs/FEATURES.md).
+**Linux and macOS · x86-64 and ARM64.** Native builds, packaging, installation
+and GUI startup checks pass CI on all four targets. Windows isn't a launch target.
 
-Once a reviewed GitHub release is published, mise can install both executables
-without Rust or a custom plugin (replace `OWNER` with the repository owner):
+One [mise](https://mise.jdx.dev/) install gives you **both the desktop app and
+the independent CLI**—no Rust toolchain or custom plugin needed:
 
 ```sh
-mise use -g github:OWNER/rowboat@latest
-rowboatctl --help
-rowboat
+mise use -g github:bndnsmth/rowboat@0.1.0
+
+rowboatctl --help              # Explore the CLI
+rowboatctl skills get core     # Read the built-in quickstart
+rowboat                       # Launch the desktop app
 ```
 
-Mise manages the commands, not desktop launchers. Release archives also include
-an installer and, on macOS, `Rowboat.app`. See the release guide for compatibility
-requirements, publication prerequisites and macOS signing status.
+Use `@latest` instead of `@0.1.0` to select the newest eligible release. Mise's
+release-age policy can delay very new releases; the explicit pin works immediately.
+
+Prefer a download? [Release archives](https://github.com/bndnsmth/rowboat/releases)
+include both binaries, an installer and, on macOS, `Rowboat.app`. Mise manages
+the commands; use the installer for desktop launchers. macOS bundles are currently
+ad-hoc signed, **not notarized**. See the [installation guide](docs/DISTRIBUTION.md)
+for runtime requirements and [feature coverage](docs/FEATURES.md) for remaining limits.
+
+Open **Connections** in the desktop app to add a PostgreSQL/MySQL server or open
+a SQLite file. The CLI can use the same saved connections without the GUI running.
+
+### Build from source
 
 From a checkout, build both apps with [mise](https://mise.jdx.dev/). The Rust
 toolchain is pinned for you.
@@ -76,13 +85,13 @@ mise trust
 mise install
 mise run release
 ./target/release/rowboat
+./target/release/rowboatctl --help
 ```
 
-Open **Connections** to add a PostgreSQL/MySQL server or open a SQLite file.
-
 Want a desktop launcher? `mise run package` builds a local archive with both
-binaries and an installer. Native desktop libraries and OpenSSL are required;
-see the [installation and runtime notes](docs/DISTRIBUTION.md).
+binaries and an installer. Linux desktop/graphics libraries remain system
+dependencies; SQLite and Linux OpenSSL are bundled. See the
+[installation and runtime notes](docs/DISTRIBUTION.md).
 
 ### A few keys go a long way
 
@@ -97,17 +106,18 @@ see the [installation and runtime notes](docs/DISTRIBUTION.md).
 
 ## A proper CLI
 
-`rowboatctl` isn't a launcher for the GUI. Query databases, inspect schemas,
+**`rowboatctl` is included in the same installation as `rowboat`.** It isn't a
+launcher for the GUI. Query databases, inspect schemas,
 stream imports and exports, explain query plans, and run backups from your terminal.
 The app and CLI share saved connections, so there's no duplicate setup.
 
 For example, with a saved connection named `Development`:
 
 ```sh
-./target/release/rowboatctl --connection Development tables
-./target/release/rowboatctl --connection Development structure users
+rowboatctl --connection Development tables
+rowboatctl --connection Development structure users
 
-./target/release/rowboatctl --connection Development --read-only query \
+rowboatctl --connection Development --read-only query \
   --sql 'SELECT id, name FROM users LIMIT 10' \
   --format json-envelope --timeout 30s
 ```
@@ -115,9 +125,28 @@ For example, with a saved connection named `Development`:
 Prefer a direct connection? Use `--url` for PostgreSQL/MySQL or `--database-file`
 for SQLite. Supply passwords through `ROWBOAT_PASSWORD`, not in command-line URLs.
 
-Readable tables for people. Structured JSON, deadlines, and an embedded offline
-guide for scripts and coding agents. Start with `./target/release/rowboatctl --help`
-or read the [CLI guide](docs/AGENT-CLI.md).
+Readable tables for people. Structured JSON and deadlines for scripts. Start with
+`rowboatctl --help` or read the [CLI guide](docs/AGENT-CLI.md).
+
+### A built-in skill for coding agents
+
+The CLI ships its own Markdown skill guide—no extra files, account or download.
+Discovery and help work offline, without a database connection or credentials:
+
+```sh
+rowboatctl skills list              # Discover available skills
+rowboatctl skills get core          # Short exploration quickstart
+rowboatctl skills get core --full   # Complete agent guide and examples
+```
+
+Tell your coding agent:
+
+> Read `rowboatctl skills get core --full`, then use `rowboatctl` to inspect the
+> database I specify. Start read-only.
+
+The guide covers schema exploration, bounded queries, JSON results, timeouts and
+safe write/cancellation semantics. It is guidance for your agent, not an embedded
+AI service.
 
 ## Make it yours
 
