@@ -60,14 +60,14 @@ One [mise](https://mise.jdx.dev/) install gives you **both the desktop app and
 the independent CLI**—no Rust toolchain or custom plugin needed:
 
 ```sh
-mise use -g github:bndnsmth/rowboat@0.1.0
+mise use -g github:bndnsmth/rowboat@0.2.0
 
 rowboatctl --help              # Explore the CLI
 rowboatctl skills get core     # Read the built-in quickstart
 rowboat                       # Launch the desktop app
 ```
 
-Use `@latest` instead of `@0.1.0` to select the newest eligible release. Mise's
+Use `@latest` instead of `@0.2.0` to select the newest eligible release. Mise's
 release-age policy can delay very new releases; the explicit pin works immediately.
 
 Prefer a download? [Release archives](https://github.com/bndnsmth/rowboat/releases)

@@ -46,7 +46,7 @@ Install **both `rowboat` and `rowboatctl`** from the
 [published GitHub releases](https://github.com/bndnsmth/rowboat/releases):
 
 ```sh
-mise use -g github:bndnsmth/rowboat@0.1.0
+mise use -g github:bndnsmth/rowboat@0.2.0
 rowboatctl --help
 rowboatctl skills get core
 rowboat

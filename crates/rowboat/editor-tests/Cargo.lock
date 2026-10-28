@@ -5507,7 +5507,7 @@ dependencies = [
 
 [[package]]
 name = "rowboat-admin"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "rowboat-core",
@@ -5518,7 +5518,7 @@ dependencies = [
 
 [[package]]
 name = "rowboat-core"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -5556,7 +5556,7 @@ dependencies = [
 
 [[package]]
 name = "rowboat-services"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "chrono",
