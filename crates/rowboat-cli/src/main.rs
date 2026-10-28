@@ -10,6 +10,7 @@ use std::{
     path::PathBuf,
 };
 
+mod ai;
 mod execution;
 mod inspection;
 mod live;
@@ -56,6 +57,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Review performance evidence with an installed agent; no live database access.
+    Ai {
+        #[command(subcommand)]
+        command: ai::AiCommand,
+    },
     /// Read embedded agent skills offline; no connection or profile store needed.
     #[command(after_help = skills::HELP)]
     Skills {
@@ -444,6 +450,16 @@ fn output(text: &str, destination: Option<PathBuf>) -> Result<()> {
 }
 
 async fn run(cli: Cli) -> Result<()> {
+    if let Command::Ai { command } = &cli.command {
+        anyhow::ensure!(
+            cli.url.is_none()
+                && cli.database_file.is_none()
+                && !cli.create
+                && cli.ssh_known_hosts.is_none(),
+            "AI commands consume reviewed files, not live database targets. Use --connection only to enforce a saved connection's AI policy."
+        );
+        return ai::run(command, cli.connection.as_deref()).await;
+    }
     if let Command::Skills { command } = &cli.command {
         return skills::run(command);
     }

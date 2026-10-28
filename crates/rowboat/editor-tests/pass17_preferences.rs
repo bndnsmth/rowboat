@@ -15,6 +15,7 @@ fn click(cx: &mut TestAppContext, window: AnyWindowHandle, selector: &'static st
 }
 
 fn enter_budget(cx: &mut TestAppContext, window: AnyWindowHandle, value: &str) {
+    click(cx, window, "preferences-tab-editor");
     click(cx, window, "query_result_limit_mib");
     cx.simulate_keystrokes(window, "ctrl-a");
     cx.simulate_input(window, value);

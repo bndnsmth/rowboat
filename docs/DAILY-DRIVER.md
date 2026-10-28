@@ -341,6 +341,15 @@ the connection's real transaction/read-only rules, with no automatic rollback.
 Explicit writes, data-changing CTEs, INTO and locking clauses are currently
 rejected by this query-profiling entry point. Ctrl+C requests server cancellation.
 
+Configure **Settings → AI**, then use the top-right sparkles button for the
+resizable **Workspace AI** sidebar. Ask questions or author SQL using the selected
+database/table/query/result context; values are excluded unless shared explicitly.
+**Review context** allows redaction before Send. Suggestions open in new SQL tabs
+without execution. The plan viewer retains **Ask AI** and **Ask in sidebar**.
+**Allow agent investigation** is a separate per-connection trusted opt-in: it
+enables agent shell/read tools with rowboatctl read-only instructions, not an
+enforced sandbox. See [AI assistance](AI.md) for scope, privacy and CLI limitations.
+
 ## Effective access
 
 ```sh

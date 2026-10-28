@@ -1,6 +1,13 @@
 #![cfg(test)]
 #![allow(dead_code)] // Application entry points are intentionally not launched by TestPlatform.
 extern crate gpui_kit as gpui;
+mod ai_performance;
+mod ai_ux;
+mod assistant;
+#[path = "../src/assistant_context.rs"]
+mod assistant_context;
+#[path = "../src/assistant_ui.rs"]
+mod assistant_ui;
 mod close_lifecycle_tests;
 mod connection_navigation;
 mod connection_polish;
@@ -24,6 +31,8 @@ mod pass22_library;
 mod access_ui;
 #[path = "../src/advanced.rs"]
 mod advanced;
+#[path = "../src/ai_ui.rs"]
+mod ai_ui;
 #[path = "../src/app.rs"]
 mod app;
 #[path = "../src/app_runtime.rs"]
@@ -48,6 +57,8 @@ mod data_transfer_ui;
 mod diagram_model;
 #[path = "../src/diagram_ui.rs"]
 mod diagram_ui;
+#[path = "../src/dialog.rs"]
+mod dialog;
 #[path = "../src/editor_replacement_tests.rs"]
 mod editor_replacement_tests;
 #[path = "../src/execution_ui.rs"]

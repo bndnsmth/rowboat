@@ -32,7 +32,10 @@ See [distribution](DISTRIBUTION.md) for the exact requirements and release gates
 | Query-result editing | Explicit editing run for supported single-table direct projections, aliases and complete keys | Update-only; no joins, CTEs, expressions, temporary sources or caller transactions |
 | SQL editor | Highlighting, token-aware formatting, named parameters, snippets/tabstops, contextual completion | No general semantic SQL validation or correlated/LATERAL/type inference |
 | Execution | Current/Selection/All scopes, multiple streamed results, cancellation, partial-result/error reporting, error navigation | Ambiguous Current boundaries reject rather than expand; reliable source positions are engine-dependent |
-| Plans | PostgreSQL/MySQL EXPLAIN and explicit ANALYZE; SQLite EXPLAIN QUERY PLAN | Optimizer costs are not elapsed milliseconds; ANALYZE can execute SQL |
+| Plans | PostgreSQL/MySQL EXPLAIN and explicit ANALYZE; SQLite EXPLAIN QUERY PLAN; bounded viewer with separate Plan/AI tabs and collapsible captured SQL | Optimizer costs are not elapsed milliseconds; ANALYZE can execute SQL |
+| AI assistance | Resizable workspace-aware right sidebar; collapsible one-row Context toolbar; installed Codex/Claude Code/OpenCode V2; SQL authoring/questions/result discussion, editable pinned context, formatted advice/SQL cards, animated pending activity; performance-plan handoff | Off by default; opening AI issues no SQL or agent request; values require opt-in; redactions/sharing exclusions survive re-review/reopening; eight-turn memory-only chats, bounded snapshots, no native provider API client; controls collapse on Send, animation honors reduced motion |
+| AI investigation | Per-connection trusted opt-in enables agent shell/read tools with rowboatctl read-only instructions and one private active-target profile; created/relative-path SQLite targets covered by fake-agent CLI tests; live Codex 0.163.0/PostgreSQL demo verified | Instructions, not confinement: agent can ignore them/use other commands; new CLI sessions do not inherit GUI transactions/temp state; no session-only passwords forwarded; other live agent/version behavior requires separate acceptance |
+| Dialog sizing | Shared corner resize, keyboard resize and maximize/restore for workbench forms, Connections, schema comparison and close guards | Sizes are window-local/in-memory; constrained legacy forms scroll rather than fully reflow |
 | Query library | Named/updatable queries, folders, associations, searchable retained history, SQL files | History and SQL drafts may contain sensitive user-authored text |
 | Pinned results | Immutable snapshots, exact key/column-mapped comparisons, changed/added/removed rows | Loaded rows only; partial results stay labeled; pins are memory-only and bounded |
 | Relationships | Bounded table neighborhoods, composite/self FKs, search, pan/zoom, Data/Structure navigation | No saved diagram layouts or image export; incomplete discovery is labeled |
@@ -121,7 +124,8 @@ statements may already have committed; cancellation does not imply rollback or
 prove remote termination if the control transport is unavailable.
 
 No plugin marketplace, embedded AI runtime, scheduled backups or durable metric
-time-series store is included.
+time-series store is included. Optional AI delegation uses an independently installed
+agent; see [AI assistance](AI.md) for privacy, restrictions and compatibility limits.
 
 See the [user guide](DAILY-DRIVER.md), [CLI guide](AGENT-CLI.md),
 [engine adapters](ENGINE-ADAPTERS.md), [SQLite tools](SQLITE-TOOLS.md),

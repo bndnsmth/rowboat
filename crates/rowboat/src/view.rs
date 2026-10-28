@@ -78,6 +78,49 @@ pub(crate) fn action(
 pub(crate) fn row() -> Div {
     div().flex().items_center().gap_2()
 }
+pub(crate) fn outlined_action(
+    id: impl Into<ElementId>,
+    title: impl Into<SharedString>,
+    enabled: bool,
+    cx: &mut Context<Workbench>,
+    handler: impl Fn(&mut Workbench, &mut Window, &mut Context<Workbench>) + 'static,
+) -> ui::Button {
+    let theme = cx.omarchy().clone();
+    action(id, title, false, enabled, cx, handler)
+        .border_1()
+        .border_color(theme.control_border())
+        .bg(theme.inset)
+        .min_h(px(32.))
+        .px_3()
+        .self_start()
+        .flex_shrink_0()
+}
+pub(crate) fn ai_action(
+    id: impl Into<ElementId>,
+    title: &'static str,
+    primary: bool,
+    enabled: bool,
+    cx: &mut Context<Workbench>,
+    handler: impl Fn(&mut Workbench, &mut Window, &mut Context<Workbench>) + 'static,
+) -> ui::Button {
+    let theme = cx.omarchy().clone();
+    action(id, "", primary, enabled, cx, handler)
+        .accessibility_label(title)
+        .min_h(px(34.))
+        .px_3()
+        .gap_2()
+        .self_start()
+        .flex_shrink_0()
+        .when(!primary, |button| {
+            button
+                .border_1()
+                .border_color(theme.accent.opacity(0.5))
+                .bg(theme.accent.opacity(0.1))
+                .text_color(theme.accent)
+        })
+        .child(icon(ui::IconName::Sparkles))
+        .child(title)
+}
 pub(crate) fn column() -> Div {
     div().flex().flex_col().min_w_0().min_h_0()
 }
@@ -2656,62 +2699,119 @@ impl Workbench {
     }
 
     pub(crate) fn modal(&self, content: AnyElement, cx: &mut Context<Self>) -> AnyElement {
-        div()
-            .occlude()
-            .absolute()
-            .inset_0()
-            .flex()
-            .items_center()
-            .justify_center()
-            .bg(black().opacity(0.55))
+        let kind = self.modal_kind();
+        let surface = column()
+            .max_w((self.viewport.width - px(32.)).max(px(240.)))
+            .key_context("RowboatModal")
+            // The workbench sits below the 40px workspace band. Reserve
+            // that band as well as margins when clamping window-sized dialogs.
+            .max_h((self.viewport.height - px(80.)).max(px(160.)))
+            .min_h_0()
+            .bg(cx.omarchy().surface.opacity(1.))
+            .when(kind == "performance", |surface| {
+                surface
+                    .w(px(960.).min(self.viewport.width - px(48.)))
+                    .h(px(720.).min(self.viewport.height - px(104.)))
+            })
+            .when(kind != "performance", |surface| {
+                surface.child(
+                    row()
+                        .flex_shrink_0()
+                        .h(px(28.))
+                        .px_2()
+                        .border_b_1()
+                        .border_color(cx.omarchy().divider())
+                        .child(label("Esc to close", cx))
+                        .child(div().flex_1())
+                        .child(
+                            action("modal-dismiss", "✕", false, !self.busy, cx, |_, w, cx| {
+                                w.dispatch_action(Box::new(Dismiss), cx)
+                            })
+                            .accessibility_label("Close dialog")
+                            .debug_selector(|| "modal-dismiss".into())
+                            .size(px(24.))
+                            .p_1(),
+                        ),
+                )
+            })
             .child(
-                column()
-                    .max_w((self.viewport.width - px(32.)).max(px(240.)))
-                    .key_context("RowboatModal")
-                    // The workbench sits below the 40px workspace band. Reserve
-                    // that band as well as margins when clamping window-sized dialogs.
-                    .max_h((self.viewport.height - px(80.)).max(px(160.)))
+                div()
+                    .id("modal-viewport-scroll")
                     .min_h_0()
-                    .bg(cx.omarchy().surface.opacity(1.))
-                    .rounded(px(8.))
-                    .border_1()
-                    .border_color(cx.omarchy().border)
-                    .shadow_lg()
-                    .child(
-                        row()
-                            .flex_shrink_0()
-                            .px_3()
-                            .py_2()
-                            .border_b_1()
-                            .border_color(cx.omarchy().divider())
-                            .child(label("Tab / Shift+Tab · move focus", cx))
-                            .child(div().flex_1())
-                            .child(action(
-                                "modal-dismiss",
-                                "Close · Esc",
-                                false,
-                                !self.busy,
-                                cx,
-                                |_, w, cx| w.dispatch_action(Box::new(Dismiss), cx),
-                            )),
-                    )
-                    .child(
-                        div()
-                            .id("modal-viewport-scroll")
-                            .min_h_0()
-                            .flex_1()
-                            .overflow_scroll()
-                            .child(content),
-                    )
-                    .track_focus(&self.modal_focus),
-            )
-            .into_any_element()
+                    .flex_1()
+                    .overflow_scroll()
+                    .child(content),
+            );
+        self.dialogs.overlay(
+            kind,
+            size(self.viewport.width, self.viewport.height - px(40.)),
+            &self.modal_focus,
+            surface,
+            cx,
+        )
+    }
+    fn modal_kind(&self) -> &'static str {
+        if self.explain.as_ref().is_some_and(|e| e.open) {
+            "performance"
+        } else if self.preferences_form.is_some() {
+            "preferences"
+        } else if self.form.is_some() {
+            "connection"
+        } else if self.row_editor.is_some() {
+            "row-editor"
+        } else if self.grid.inspector.is_some() {
+            "value-inspector"
+        } else if self.quick_open {
+            "command-palette"
+        } else if self.namespace.picker.is_some() {
+            "namespace"
+        } else if self.diagram.open {
+            "relationships-diagram"
+        } else if self.library.form.is_some() {
+            "query-library"
+        } else if self.custom_metrics.editor.is_some() {
+            "custom-metric"
+        } else if self.column_form.is_some() {
+            "column"
+        } else if self.access_matrix.is_some() {
+            "access"
+        } else if self.snippet_form.is_some() {
+            "snippets"
+        } else if self.recovery.open {
+            "recovery"
+        } else if self.filters.editor.is_some() {
+            "filters"
+        } else if self.relationships.is_some() {
+            "related-rows"
+        } else if self.objects.dialog.is_some() {
+            "database-object"
+        } else if self.data_transfer.is_some() {
+            "data-transfer"
+        } else if self.transfer.is_some() {
+            "backup-restore"
+        } else if self.dashboards.editor.is_some() {
+            "dashboard"
+        } else if self.management.is_some() {
+            "schema-change"
+        } else if self.advanced.designer.is_some() {
+            "table-designer"
+        } else if self.url_input.is_some() {
+            "connection-url"
+        } else if self.close_tab_requested.is_some() {
+            "close-query"
+        } else {
+            "query-parameters"
+        }
     }
 }
 
 impl Render for Workbench {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.viewport = window.viewport_size();
+        self.sync_assistant_scope();
+        if !self.modal_open() {
+            self.dialogs.stop_drag();
+        }
         if self.profile_editor {
             return column()
                 .relative()
@@ -2755,6 +2855,31 @@ impl Render for Workbench {
             Page::Tools => self.render_tools(window, cx),
             Page::Objects => self.render_objects_page(window, cx),
             Page::Dashboard => self.render_dashboard(cx),
+        };
+        let assistant_overlay = self.assistant.open && self.viewport.width < px(1120.);
+        let mut assistant_panel = self
+            .assistant
+            .open
+            .then(|| self.render_assistant(window, cx));
+        let body = if self.assistant.open && !assistant_overlay {
+            row()
+                .gap_0()
+                .w_full()
+                .h_full()
+                .min_w_0()
+                .overflow_hidden()
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .h_full()
+                        .overflow_hidden()
+                        .child(body),
+                )
+                .children(assistant_panel.take())
+                .into_any_element()
+        } else {
+            body
         };
         let free = !self.busy;
         let connected = self.database.is_some();
@@ -3145,6 +3270,15 @@ impl Render for Workbench {
                 cx.notify();
             }))
             .on_mouse_move(cx.listener(|s, e: &MouseMoveEvent, _, cx| {
+                if let Some((start, width)) = s.assistant.resize {
+                    if e.dragging() {
+                        s.assistant.width =
+                            (width + f32::from(start - e.position.x)).clamp(320., 720.);
+                        cx.notify();
+                    } else {
+                        s.assistant.resize = None;
+                    }
+                }
                 if let Some((i, start, width)) = s.resizing {
                     if e.dragging() {
                         s.widths[i] = (width + f32::from(e.position.x) - start).clamp(75., 800.);
@@ -3156,7 +3290,10 @@ impl Render for Workbench {
             }))
             .on_mouse_up(
                 MouseButton::Left,
-                cx.listener(|s, _, _, _| s.resizing = None),
+                cx.listener(|s, _, _, _| {
+                    s.resizing = None;
+                    s.assistant.resize = None;
+                }),
             )
             .child(header)
             .child(
@@ -3178,6 +3315,16 @@ impl Render for Workbench {
                 ),
             )
             .child(status);
+        if assistant_overlay {
+            root = root.child(
+                div()
+                    .absolute()
+                    .top(px(48.))
+                    .bottom(px(33.))
+                    .right_0()
+                    .children(assistant_panel),
+            );
+        }
         if !self.recovery.detached.is_empty() || self.recovery.error.is_some() {
             root = root.child(
                 row()

@@ -2,7 +2,7 @@
 use crate::{
     app::{Event, Workbench},
     forms,
-    view::{action, column, label, row},
+    view::{action, ai_action, column, icon, label, outlined_action, row},
     workspace_model::Route,
 };
 use gpui_kit::{prelude::*, *};
@@ -12,18 +12,26 @@ use std::collections::BTreeSet;
 
 pub struct ExplainState {
     request: uuid::Uuid,
-    route: Route,
+    pub(crate) route: Route,
     tab: usize,
     title: String,
-    sql: String,
+    pub(crate) sql: String,
     execution: String,
     analyzing: bool,
     pub open: bool,
-    pending: bool,
+    pub(crate) pending: bool,
+    pub(crate) ai: Option<crate::ai_ui::Analysis>,
     pub(crate) report: Option<ExplainReport>,
     pub(crate) error: Option<String>,
     collapsed: BTreeSet<Vec<usize>>,
     details: BTreeSet<Vec<usize>>,
+    pub(crate) page: ExplainPage,
+    show_sql: bool,
+}
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ExplainPage {
+    Plan,
+    Ai,
 }
 pub struct Explained {
     request: uuid::Uuid,
@@ -33,6 +41,33 @@ pub struct Explained {
 }
 impl Workbench {
     pub fn explain_query(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_performance(ExplainPage::Plan, window, cx);
+    }
+    pub(crate) fn ai_entry_enabled(&self) -> bool {
+        !self.close_requested
+            && (!self.modal_open()
+                || self.quick_open
+                || self
+                    .explain
+                    .as_ref()
+                    .is_some_and(|state| state.open && !state.pending))
+            && self.session_ready
+    }
+    pub(crate) fn open_ai_assistant(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.ai_entry_enabled() {
+            return;
+        }
+        if self
+            .explain
+            .as_ref()
+            .is_some_and(|state| state.open && state.report.is_some())
+        {
+            self.ask_about_plan(window, cx);
+        } else {
+            self.toggle_assistant(window, cx);
+        }
+    }
+    fn open_performance(&mut self, page: ExplainPage, window: &mut Window, cx: &mut Context<Self>) {
         if !self.require_admin(rowboat_admin::providers::Operation::Explain, cx) {
             return;
         }
@@ -76,12 +111,42 @@ impl Workbench {
             execution: execution.clone(),
             analyzing: false,
             open: true,
-            pending: true,
+            pending: false,
+            ai: None,
             report: None,
             error: None,
             collapsed: BTreeSet::new(),
             details: BTreeSet::new(),
+            page,
+            show_sql: false,
         });
+        if page == ExplainPage::Plan {
+            self.load_captured_plan(cx);
+        }
+        window.focus(&self.focus, cx);
+        cx.notify();
+    }
+    pub(crate) fn load_captured_plan(&mut self, cx: &mut Context<Self>) {
+        let Some(state) = &mut self.explain else {
+            return;
+        };
+        if self.busy
+            || state.pending
+            || !state.open
+            || state.route != self.tx.route
+            || self.close_requested
+        {
+            return;
+        }
+        let Some(db) = self.database.clone() else {
+            return;
+        };
+        let request = uuid::Uuid::new_v4();
+        let execution = state.execution.clone();
+        let tab_id = state.tab;
+        state.request = request;
+        state.pending = true;
+        state.error = None;
         self.busy = true;
         let tx = self.tx.clone();
         self.runtime.spawn(async move {
@@ -96,10 +161,14 @@ impl Workbench {
                 transaction,
             })));
         });
-        window.focus(&self.focus, cx);
         cx.notify();
     }
-    pub fn receive_explained(&mut self, event: Explained, cx: &mut Context<Self>) {
+    pub fn receive_explained(
+        &mut self,
+        event: Explained,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(state) = &mut self.explain else {
             return;
         };
@@ -135,6 +204,41 @@ impl Workbench {
                 self.fail(e);
             }
         }
+        if self
+            .explain
+            .as_ref()
+            .is_some_and(|state| state.page == ExplainPage::Ai && state.report.is_some())
+            && self.profile.as_ref().is_some_and(|profile| {
+                self.shared
+                    .borrow()
+                    .state
+                    .preferences
+                    .ai
+                    .allowed(&profile.id)
+            })
+        {
+            self.prepare_ai_analysis(window, cx);
+        }
+        cx.notify();
+    }
+    pub(crate) fn show_plan_ai(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(state) = &mut self.explain else {
+            return;
+        };
+        state.page = ExplainPage::Ai;
+        if state.ai.is_none()
+            && state.report.is_some()
+            && self.profile.as_ref().is_some_and(|profile| {
+                self.shared
+                    .borrow()
+                    .state
+                    .preferences
+                    .ai
+                    .allowed(&profile.id)
+            })
+        {
+            self.prepare_ai_analysis(window, cx);
+        }
         cx.notify();
     }
     fn analyze_captured_query(&mut self, cx: &mut Context<Self>) {
@@ -159,6 +263,7 @@ impl Workbench {
         let request = uuid::Uuid::new_v4();
         state.request = request;
         state.pending = true;
+        state.ai = None;
         state.analyzing = true;
         state.report = None;
         state.error = None;
@@ -189,6 +294,7 @@ impl Workbench {
             && !state.pending
         {
             state.open = false;
+            state.ai = None;
         }
     }
     fn render_plan_node(
@@ -211,83 +317,102 @@ impl Workbench {
         let copy_selector = format!("plan-copy-{id}");
         let detail_path = path.clone();
         let raw = serde_json::to_string_pretty(&node.raw).unwrap_or_default();
+        let title = format!(
+            "{}{}",
+            node.operation,
+            node.relation
+                .as_ref()
+                .map(|name| format!(" · {name}"))
+                .unwrap_or_default()
+        );
+        let heading = if node.children.is_empty() {
+            // A leaf is information, not a disabled action. Keep it at full
+            // contrast and out of the focus order.
+            row()
+                .id(SharedString::from(format!("plan-node-{id}")))
+                .debug_selector(move || node_selector.clone())
+                .flex_1()
+                .min_w_0()
+                .child(
+                    icon(gpui_omarchy::IconName::FileCode)
+                        .size(px(14.))
+                        .text_color(theme.accent),
+                )
+                .child(div().font_weight(FontWeight::MEDIUM).child(title))
+                .into_any_element()
+        } else {
+            action(
+                SharedString::from(format!("plan-node-{id}")),
+                format!("{} {title}", if collapsed { "▸" } else { "▾" }),
+                false,
+                true,
+                cx,
+                move |s, _, cx| {
+                    if let Some(e) = &mut s.explain
+                        && !e.collapsed.remove(&toggle)
+                    {
+                        e.collapsed.insert(toggle.clone());
+                    }
+                    cx.notify();
+                },
+            )
+            .font_weight(FontWeight::MEDIUM)
+            .debug_selector(move || node_selector.clone())
+            .into_any_element()
+        };
         let mut body = column()
-            .gap_1()
+            .gap_2()
             .pl_3()
             .border_l_2()
             .border_color(theme.accent.opacity(0.4))
             .child(
                 row()
+                    .flex_wrap()
+                    .p_2()
+                    .bg(theme.inset)
+                    .rounded(px(6.))
+                    .child(heading)
+                    .when_some(node.access.as_ref(), |row, access| {
+                        row.child(
+                            div()
+                                .px_2()
+                                .py_1()
+                                .rounded(px(4.))
+                                .bg(theme.accent.opacity(0.1))
+                                .text_color(theme.accent)
+                                .text_size(px(11.))
+                                .child(access.clone()),
+                        )
+                    })
+                    .child(div().flex_1())
                     .child(
-                        action(
-                            SharedString::from(format!("plan-node-{id}")),
-                            format!(
-                                "{} {}{}{}",
-                                if node.children.is_empty() {
-                                    "·"
-                                } else if collapsed {
-                                    "▸"
-                                } else {
-                                    "▾"
-                                },
-                                node.operation,
-                                node.relation
-                                    .as_ref()
-                                    .map(|v| format!(" · {v}"))
-                                    .unwrap_or_default(),
-                                node.access
-                                    .as_ref()
-                                    .map(|v| format!(" · {v}"))
-                                    .unwrap_or_default()
-                            ),
-                            false,
-                            !node.children.is_empty(),
+                        outlined_action(
+                            SharedString::from(format!("plan-detail-{id}")),
+                            if details { "Hide detail" } else { "Details" },
+                            true,
                             cx,
                             move |s, _, cx| {
                                 if let Some(e) = &mut s.explain
-                                    && !e.collapsed.remove(&toggle)
+                                    && !e.details.remove(&detail_path)
                                 {
-                                    e.collapsed.insert(toggle.clone());
+                                    e.details.insert(detail_path.clone());
                                 }
                                 cx.notify();
                             },
                         )
-                        .debug_selector(move || node_selector.clone()),
+                        .min_h(px(28.)),
                     )
-                    .child(action(
-                        SharedString::from(format!("plan-detail-{id}")),
-                        if details { "Hide detail" } else { "Details" },
-                        false,
-                        true,
-                        cx,
-                        move |s, _, cx| {
-                            if let Some(e) = &mut s.explain
-                                && !e.details.remove(&detail_path)
-                            {
-                                e.details.insert(detail_path.clone());
-                            }
-                            cx.notify();
-                        },
-                    ))
                     .child(
-                        action(
+                        outlined_action(
                             SharedString::from(format!("plan-copy-{id}")),
-                            if self
-                                .profile
-                                .as_ref()
-                                .is_some_and(|p| p.engine == rowboat_core::Engine::Sqlite)
-                            {
-                                "Copy native row (JSON)"
-                            } else {
-                                "Copy node JSON"
-                            },
-                            false,
+                            "Copy JSON",
                             true,
                             cx,
                             move |_, _, cx| {
                                 cx.write_to_clipboard(ClipboardItem::new_string(raw.clone()))
                             },
                         )
+                        .min_h(px(28.))
                         .debug_selector(move || copy_selector.clone()),
                     ),
             );
@@ -348,106 +473,305 @@ impl Workbench {
             .as_ref()
             .is_some_and(|p| p.engine == rowboat_core::Engine::Sqlite);
         let analyze_supported = self.admin_supported(rowboat_admin::providers::Operation::Analyze);
-        let mut body=column().p_4().gap_3().text_size(px(13.))
-            .child(row().flex_wrap().child(ui::icon(ui::IconName::Layers).text_color(theme.accent)).child(div().text_size(px(16.)).font_weight(FontWeight::SEMIBOLD).child("Query plan")).child(div().flex_1()).child(action("close-visual-explain","Close",false,!state.pending,cx,|s,w,cx|{s.dismiss_explain();w.focus(&s.focus,cx);cx.notify();}).debug_selector(|| "close-visual-explain".into())))
-            .child(label(format!("EXPLAIN · {} · tab {}",state.title,state.tab), cx))
-            .child(div().h(px(1.)).bg(theme.divider()))
-            .child(label(if sqlite { "SQLite EXPLAIN QUERY PLAN · query strategy only; the captured statement is not executed. Native plan rows contain no actual runtime or row-count estimates. ANALYZE profiling is unavailable." } else if state.analyzing { "ANALYZE · actual times are milliseconds, typically per-loop averages. Optimizer costs are not estimated milliseconds; node times are not summed." } else { "Plain EXPLAIN · estimates only. Analyze below really executes the captured statement; SELECT functions can have side effects. Cancellation does not prove rollback." },cx))
-            .child(div().p_3().bg(theme.inset).text_size(px(12.)).font_family(theme.mono_font.clone()).child(state.sql.clone()));
-        body = body.child(label(
-            format!(
-                "Captured SQL (parameters expanded in memory only): {}",
-                state.execution
-            ),
-            cx,
-        ));
-        if analyze_supported {
-            body = body.child(
-                action(
-                    "execute-analyze",
-                    "Analyze — execute captured SQL",
-                    true,
-                    !self.busy && !self.close_requested && self.transaction_known,
-                    cx,
-                    |s, _, cx| s.analyze_captured_query(cx),
-                )
-                .debug_selector(|| "execute-analyze".into()),
-            );
-        }
-        if state.pending {
-            body = body
-                .child(if state.analyzing {
-                    "Running ANALYZE…"
-                } else {
-                    "Loading plan…"
-                })
-                .child(action(
-                    "cancel-profile",
-                    "Cancel plan request",
-                    false,
-                    true,
-                    cx,
-                    |s, _, cx| s.cancel(cx),
-                ));
-        }
-        if let Some(error) = &state.error {
-            body = body.child(label(format!("EXPLAIN failed: {error}"), cx));
-        }
-        if let Some(report) = &state.report {
-            let raw = report.raw_report.clone();
-            body = body.child(label(
+        let title = column()
+            .gap_1()
+            .flex_1()
+            .min_w_0()
+            .child(
+                div()
+                    .text_size(px(18.))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child("Query performance"),
+            )
+            .child(label(
                 format!(
-                    "Mode: {:?} · raw format: {:?}",
-                    report.mode, report.raw_format
+                    "{} · {} · captured query",
+                    self.profile
+                        .as_ref()
+                        .map(|p| p.engine.descriptor().name)
+                        .unwrap_or("SQL"),
+                    state.title
                 ),
                 cx,
             ));
-            if report.mode == ReportMode::Analyze {
-                for (name, value) in &report.timing {
-                    body = body.child(label(format!("{name}: {} ms", value.0), cx));
-                }
-            }
-            body = body.child(
-                action(
-                    "copy-plan-json",
-                    if sqlite {
-                        "Copy native plan rows (JSON)"
+        let mut header = row()
+            .flex_shrink_0()
+            .px_4()
+            .py_3()
+            .gap_3()
+            .child(
+                div()
+                    .p_2()
+                    .rounded(px(8.))
+                    .bg(theme.accent.opacity(0.1))
+                    .child(
+                        icon(if state.page == ExplainPage::Ai {
+                            ui::IconName::Sparkles
+                        } else {
+                            ui::IconName::Layers
+                        })
+                        .size(px(20.))
+                        .text_color(theme.accent),
+                    ),
+            )
+            .child(title);
+        if state.page == ExplainPage::Plan {
+            header = header.child(
+                ai_action(
+                    "prepare-ai-analysis",
+                    "Ask AI",
+                    true,
+                    !state.pending && state.report.is_some(),
+                    cx,
+                    |s, w, cx| s.show_plan_ai(w, cx),
+                )
+                .debug_selector(|| "prepare-ai-analysis".into()),
+            );
+            header = header.child(
+                outlined_action(
+                    "plan-to-sidebar",
+                    "Ask in sidebar",
+                    !state.pending && state.report.is_some(),
+                    cx,
+                    |s, w, cx| s.ask_about_plan(w, cx),
+                )
+                .debug_selector(|| "plan-to-sidebar".into()),
+            );
+        }
+        header = header.child(
+            outlined_action(
+                "close-visual-explain",
+                "Close",
+                !state.pending,
+                cx,
+                |s, w, cx| {
+                    s.dismiss_explain();
+                    w.focus(&s.focus, cx);
+                    cx.notify();
+                },
+            )
+            .debug_selector(|| "close-visual-explain".into()),
+        );
+        let mut tabs = row()
+            .flex_shrink_0()
+            .px_4()
+            .gap_3()
+            .border_b_1()
+            .border_color(theme.divider());
+        for (page, id, title, glyph) in [
+            (
+                ExplainPage::Plan,
+                "performance-tab-plan",
+                "Execution plan",
+                ui::IconName::Layers,
+            ),
+            (
+                ExplainPage::Ai,
+                "performance-tab-ai",
+                "AI assistant",
+                ui::IconName::Sparkles,
+            ),
+        ] {
+            tabs = tabs.child(
+                action(id, "", false, true, cx, move |s, w, cx| {
+                    if page == ExplainPage::Ai {
+                        s.show_plan_ai(w, cx);
+                    } else if let Some(state) = &mut s.explain {
+                        state.page = page;
+                        cx.notify();
+                    }
+                })
+                .accessibility_label(title)
+                .rounded_none()
+                .px_3()
+                .h(px(38.))
+                .border_b_2()
+                .border_color(if state.page == page {
+                    theme.accent
+                } else {
+                    transparent_black()
+                })
+                .text_color(if state.page == page {
+                    theme.accent
+                } else {
+                    theme.secondary
+                })
+                .child(icon(glyph).size(px(14.)))
+                .child(title)
+                .debug_selector(move || id.into()),
+            );
+        }
+        let mut body = column()
+            .w_full()
+            .h_full()
+            .text_size(px(13.))
+            .child(header)
+            .child(tabs);
+        if state.page == ExplainPage::Ai {
+            body = body.child(self.render_ai_analysis(window, cx));
+        } else {
+            let mut toolbar = row()
+                .flex_wrap()
+                .flex_shrink_0()
+                .px_4()
+                .py_3()
+                .child(
+                    div()
+                        .px_2()
+                        .py_1()
+                        .rounded(px(4.))
+                        .bg(theme.inset)
+                        .text_size(px(11.))
+                        .child(if sqlite {
+                            "SQLite query strategy"
+                        } else if state.analyzing {
+                            "Actual execution"
+                        } else {
+                            "Estimated plan"
+                        }),
+                )
+                .child(outlined_action(
+                    "show-captured-sql",
+                    if state.show_sql {
+                        "Hide SQL"
                     } else {
-                        "Copy complete raw plan (JSON / TREE)"
+                        "Captured SQL"
                     },
-                    false,
                     true,
                     cx,
-                    move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(raw.clone())),
-                )
-                .debug_selector(|| "copy-plan-json".into()),
-            );
-            for warning in &report.warnings {
-                body = body.child(label(warning.clone(), cx));
-            }
-            if report.roots.is_empty() {
-                body = body.child(label(
-                    if sqlite {
-                        "No native plan rows returned; SQLite may omit a plan for this statement."
-                    } else {
-                        "No recognized tree nodes; complete raw report is available above."
+                    |s, _, cx| {
+                        if let Some(state) = &mut s.explain {
+                            state.show_sql = !state.show_sql;
+                        }
+                        cx.notify();
                     },
+                ))
+                .child(div().flex_1());
+            if let Some(report) = &state.report {
+                let raw = report.raw_report.clone();
+                toolbar = toolbar.child(
+                    outlined_action(
+                        "copy-plan-json",
+                        "Copy raw plan",
+                        true,
+                        cx,
+                        move |_, _, cx| {
+                            cx.write_to_clipboard(ClipboardItem::new_string(raw.clone()))
+                        },
+                    )
+                    .child(icon(ui::IconName::Copy).size(px(14.)))
+                    .debug_selector(|| "copy-plan-json".into()),
+                );
+            }
+            if analyze_supported {
+                toolbar = toolbar.child(
+                    outlined_action(
+                        "execute-analyze",
+                        "Run EXPLAIN ANALYZE",
+                        !self.busy
+                            && !self.close_requested
+                            && self.transaction_known
+                            && state.ai.as_ref().is_none_or(|ai| ai.request.is_none()),
+                        cx,
+                        |s, _, cx| s.analyze_captured_query(cx),
+                    )
+                    .text_color(theme.warning)
+                    .debug_selector(|| "execute-analyze".into()),
+                );
+            }
+            body = body.child(toolbar);
+            let mut plan = column().p_4().pt_0().gap_3()
+                .child(div().p_3().rounded(px(6.)).bg(theme.inset).child(label(if sqlite {
+                    "Query strategy only. SQLite does not report actual runtime or row-count estimates here."
+                } else if state.analyzing {
+                    "Actual times are milliseconds (often per-loop averages). Optimizer costs are not time; node timings cannot be added."
+                } else {
+                    "Estimates only. EXPLAIN ANALYZE really runs the captured SQL; SELECT functions can have side effects. Cancellation does not prove rollback."
+                }, cx)));
+            if state.show_sql {
+                plan = plan.child(
+                    column()
+                        .p_3()
+                        .gap_2()
+                        .bg(theme.inset)
+                        .rounded(px(6.))
+                        .child(label(
+                            "Captured SQL · parameter values may be sensitive",
+                            cx,
+                        ))
+                        .child(
+                            div()
+                                .font_family(theme.mono_font.clone())
+                                .text_size(px(12.))
+                                .child(state.execution.clone()),
+                        ),
+                );
+            }
+            if state.pending {
+                plan = plan.child(
+                    row()
+                        .child(crate::loading_ui::status(window, cx))
+                        .child("Loading query plan…")
+                        .child(outlined_action(
+                            "cancel-profile",
+                            "Cancel",
+                            true,
+                            cx,
+                            |s, _, cx| s.cancel(cx),
+                        )),
+                );
+            }
+            if let Some(error) = &state.error {
+                plan = plan.child(
+                    div()
+                        .text_color(theme.danger)
+                        .child(format!("EXPLAIN failed: {error}")),
+                );
+            }
+            if let Some(report) = &state.report {
+                if report.mode == ReportMode::Analyze {
+                    let mut metrics = row().flex_wrap();
+                    for (name, value) in &report.timing {
+                        metrics = metrics.child(
+                            div()
+                                .p_2()
+                                .bg(theme.inset)
+                                .rounded(px(4.))
+                                .child(format!("{name}: {} ms", value.0)),
+                        );
+                    }
+                    plan = plan.child(metrics);
+                }
+                for warning in &report.warnings {
+                    plan = plan.child(label(warning.clone(), cx));
+                }
+                if report.roots.is_empty() {
+                    plan = plan.child(label(
+                        "No recognized plan nodes. Use Copy raw plan to inspect the native report.",
+                        cx,
+                    ));
+                }
+                for (index, node) in report.roots.iter().enumerate() {
+                    plan = plan.child(self.render_plan_node(node, vec![index], cx));
+                }
+            } else if !state.pending {
+                plan = plan.child(outlined_action(
+                    "load-estimated-plan",
+                    "Load estimated plan",
+                    true,
                     cx,
+                    |s, _, cx| s.load_captured_plan(cx),
                 ));
             }
-            for (index, node) in report.roots.iter().enumerate() {
-                body = body.child(self.render_plan_node(node, vec![index], cx));
-            }
+            body = body.child(
+                div()
+                    .id("explain-tree-scroll")
+                    .min_h_0()
+                    .flex_1()
+                    .overflow_scroll()
+                    .child(plan),
+            );
         }
-        self.modal(
-            div()
-                .id("explain-tree-scroll")
-                .w(window.viewport_size().width - px(48.))
-                .max_h(window.viewport_size().height - px(60.))
-                .overflow_y_scroll()
-                .child(body)
-                .into_any_element(),
-            cx,
-        )
+        self.modal(body.into_any_element(), cx)
     }
 }

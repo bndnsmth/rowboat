@@ -1,4 +1,6 @@
 //! Private application state, import/export, keyring, SSH, and database tools.
+pub mod ai;
+pub mod ai_context;
 mod completion_dialect;
 mod connection_issue;
 mod credentials;
