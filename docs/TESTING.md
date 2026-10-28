@@ -81,6 +81,14 @@ With reduced motion enabled it should remain a static activity indicator instead
 Sidebar regressions also preserve edited/redacted previews across repeated Review
 context clicks and closing/reopening, and preserve explicit sharing exclusions
 instead of reapplying global defaults on every reopen.
+Activation cases start with AI off or the connection blocked, cancel/confirm the
+trust warning, then click the actual rendered Send button and verify a completed
+fake-agent response. Separate cases cover advice-only activation without tools,
+unchanged unrelated connection blocks and preferences becoming read-only during
+confirmation. Enabling alone must not invoke the agent or execute SQL.
+An isolated native Wayland check also started with AI off, confirmed investigation,
+observed the checked toggle/enabled Send button, then clicked Send and received a
+fake-agent response after a real read-only query returned `id = 7` from disposable SQLite.
 
 Native AI acceptance should use an isolated `ROWBOAT_DATA_DIR`, a disposable
 SQLite file and a fake agent. Inspect the welcome, context review, completed

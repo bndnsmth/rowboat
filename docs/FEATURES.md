@@ -46,6 +46,10 @@ Ordinary Run does not prepare editing metadata or replay SQL. Close never applie
 database edits. SQL recovery does not automatically save a named query or an SQL
 file. Unstaged form input and parameter values are not recoverable.
 
+The AI sidebar offers explicit activation when assistance is off. Trusted-mode
+confirmation can enable both AI and investigation for the current connection;
+neither activation path sends a prompt automatically.
+
 With no workspace open in the main window, the searchable Connections browser is
 the default, including fresh startup and closing/moving the last main workspace.
 Open SQL workspaces still restore; archived drafts reopen only on request. Browsing

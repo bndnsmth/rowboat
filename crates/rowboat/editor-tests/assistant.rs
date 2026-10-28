@@ -95,6 +95,199 @@ fn settle(cx: &mut TestAppContext, w: AnyWindowHandle, entity: &Entity<Workbench
     panic!("Fake assistant timed out");
 }
 
+fn activation_agent(root: &Path) -> std::path::PathBuf {
+    let agent = root.join("fake-codex");
+    std::fs::write(&agent, format!("#!/bin/sh\ncase \" $* \" in *\" --help \"*) echo '--ignore-user-config --ignore-rules --ephemeral --sandbox --json'; exit 0 ;; esac\ncat > '{}'\nprintf '%s\\n' '{{\"type\":\"item.completed\",\"item\":{{\"type\":\"agent_message\",\"text\":\"Fixture advice only\"}}}}'\n", root.join("input.txt").display())).unwrap();
+    std::fs::set_permissions(&agent, std::fs::Permissions::from_mode(0o700)).unwrap();
+    agent
+}
+
+#[gpui_kit::test]
+fn assistant_activation_trust_confirmation_enables_ai_and_rendered_send_works(
+    cx: &mut TestAppContext,
+) {
+    let runtime = crate::app_runtime::AppRuntime::new().unwrap();
+    for (enabled, blocked) in [(false, false), (true, true), (false, true)] {
+        let root = tempfile::tempdir().unwrap();
+        let agent = activation_agent(root.path());
+        let (w, entity) = setup(cx, root.path(), runtime.handle());
+        cx.update_window(w, |_, _, cx| {
+            entity.update(cx, |s, _| {
+                let id = s.profile.as_ref().unwrap().id.clone();
+                s.edit_state(|state| {
+                    let ai = &mut state.preferences.ai;
+                    ai.enabled = enabled;
+                    ai.executable = agent.to_string_lossy().into();
+                    ai.disabled_connections
+                        .insert("unrelated-disabled-connection".into());
+                    if blocked {
+                        ai.disabled_connections.insert(id);
+                    }
+                });
+            })
+        })
+        .unwrap();
+        click(cx, w, "assistant-prompt");
+        cx.simulate_input(w, "Explain this fixture without executing SQL");
+        click(cx, w, "assistant-trust");
+        click(cx, w, "assistant-cancel-trust");
+        cx.read(|cx| {
+            let s = entity.read(cx);
+            let shared = s.shared.borrow();
+            let ai = &shared.state.preferences.ai;
+            let id = &s.profile.as_ref().unwrap().id;
+            assert_eq!(ai.enabled, enabled);
+            assert_eq!(ai.disabled_connections.contains(id), blocked);
+            assert!(!ai.investigation_connections.contains(id));
+        });
+        click(cx, w, "assistant-trust");
+        click(cx, w, "assistant-enable-trust");
+        cx.read(|cx| {
+            let s = entity.read(cx);
+            let shared = s.shared.borrow();
+            let ai = &shared.state.preferences.ai;
+            assert!(
+                ai.investigation_allowed(&s.profile.as_ref().unwrap().id),
+                "Confirming trust must not leave AI disabled"
+            );
+            assert!(
+                ai.disabled_connections
+                    .contains("unrelated-disabled-connection")
+            );
+            assert!(s.assistant.request.is_none());
+            assert_eq!(s.query_run_invocations, 0);
+        });
+        assert!(
+            !root.path().join("input.txt").exists(),
+            "Enabling must not submit a prompt"
+        );
+        click(cx, w, "assistant-send");
+        settle(cx, w, &entity);
+        cx.read(|cx| {
+            let s = entity.read(cx);
+            assert_eq!(
+                s.assistant.turns.len(),
+                1,
+                "The rendered Send button must launch a request"
+            );
+            let turn = &s.assistant.turns[0];
+            assert!(turn.complete && turn.trusted, "{:?}", turn.error);
+            assert_eq!(s.query_run_invocations, 0);
+        });
+        let sent = std::fs::read_to_string(root.path().join("input.txt")).unwrap();
+        assert!(sent.contains("ROWBOATCTL INVESTIGATION GUIDE"));
+        click(cx, w, "assistant-context-toggle");
+        click(cx, w, "assistant-trust");
+        cx.read(|cx| {
+            let s = entity.read(cx);
+            let shared = s.shared.borrow();
+            let ai = &shared.state.preferences.ai;
+            assert!(ai.enabled);
+            assert!(
+                !ai.investigation_connections
+                    .contains(&s.profile.as_ref().unwrap().id)
+            );
+        });
+    }
+}
+
+#[gpui_kit::test]
+fn assistant_activation_advice_can_be_enabled_without_granting_tools(cx: &mut TestAppContext) {
+    let root = tempfile::tempdir().unwrap();
+    let agent = activation_agent(root.path());
+    let runtime = crate::app_runtime::AppRuntime::new().unwrap();
+    let (w, entity) = setup(cx, root.path(), runtime.handle());
+    cx.update_window(w, |_, _, cx| {
+        entity.update(cx, |s, _| {
+            let id = s.profile.as_ref().unwrap().id.clone();
+            s.edit_state(|state| {
+                state.preferences.ai.enabled = false;
+                state.preferences.ai.executable = agent.to_string_lossy().into();
+                state.preferences.ai.disabled_connections.insert(id);
+            });
+        })
+    })
+    .unwrap();
+    click(cx, w, "assistant-prompt");
+    cx.simulate_input(w, "Explain the supplied evidence");
+    click(cx, w, "assistant-send");
+    cx.read(|cx| assert!(entity.read(cx).assistant.turns.is_empty()));
+    click(cx, w, "assistant-enable-ai");
+    cx.read(|cx| {
+        let s = entity.read(cx);
+        let shared = s.shared.borrow();
+        let ai = &shared.state.preferences.ai;
+        assert!(ai.allowed(&s.profile.as_ref().unwrap().id));
+        assert!(ai.investigation_connections.is_empty());
+        assert!(s.assistant.request.is_none());
+    });
+    assert!(!root.path().join("input.txt").exists());
+    click(cx, w, "assistant-send");
+    settle(cx, w, &entity);
+    cx.read(|cx| {
+        let s = entity.read(cx);
+        assert_eq!(s.assistant.turns.len(), 1);
+        let turn = &s.assistant.turns[0];
+        assert!(turn.complete && !turn.trusted, "{:?}", turn.error);
+        assert_eq!(s.query_run_invocations, 0);
+    });
+    let sent = std::fs::read_to_string(root.path().join("input.txt")).unwrap();
+    assert!(!sent.contains("ROWBOATCTL INVESTIGATION GUIDE"));
+}
+
+#[gpui_kit::test]
+fn assistant_activation_readonly_storage_cannot_claim_success(cx: &mut TestAppContext) {
+    let root = tempfile::tempdir().unwrap();
+    let runtime = crate::app_runtime::AppRuntime::new().unwrap();
+    let (w, entity) = setup(cx, root.path(), runtime.handle());
+    cx.update_window(w, |_, _, cx| {
+        entity.update(cx, |s, cx| {
+            s.edit_state(|state| {
+                state.preferences.ai.enabled = false;
+                state.preferences.ai.executable = "/nonexistent-test-agent".into();
+            });
+            s.shared.borrow_mut().writable = false;
+            cx.notify();
+        })
+    })
+    .unwrap();
+    click(cx, w, "assistant-enable-ai");
+    cx.read(|cx| assert!(!entity.read(cx).shared.borrow().state.preferences.ai.enabled));
+    // Permission can also become read-only while its confirmation is open.
+    cx.update_window(w, |_, _, cx| {
+        entity.update(cx, |s, cx| {
+            s.shared.borrow_mut().writable = true;
+            cx.notify();
+        })
+    })
+    .unwrap();
+    click(cx, w, "assistant-trust");
+    cx.update_window(w, |_, _, cx| {
+        entity.update(cx, |s, cx| {
+            s.shared.borrow_mut().writable = false;
+            cx.notify();
+        })
+    })
+    .unwrap();
+    click(cx, w, "assistant-enable-trust");
+    click(cx, w, "assistant-cancel-trust");
+    cx.read(|cx| {
+        let s = entity.read(cx);
+        let shared = s.shared.borrow();
+        assert!(!shared.state.preferences.ai.enabled);
+        assert!(
+            shared
+                .state
+                .preferences
+                .ai
+                .investigation_connections
+                .is_empty()
+        );
+        assert!(s.assistant.request.is_none() && s.assistant.turns.is_empty());
+        assert_eq!(s.query_run_invocations, 0);
+    });
+}
+
 #[gpui_kit::test]
 fn assistant_context_tracks_provenance_and_values_require_explicit_opt_in(cx: &mut TestAppContext) {
     let fixture = tempfile::tempdir().unwrap();

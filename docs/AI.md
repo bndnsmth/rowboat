@@ -20,7 +20,9 @@ accounts/API keys, or implement provider HTTP calls.
    assistant…** in Commands) to toggle the **Workspace AI** right sidebar. It
    stays open while you work, with one memory-only conversation per workspace.
    Opening it alone neither queries the database nor contacts an agent. On narrow
-   windows it overlays the right side instead of crushing the SQL editor.
+    windows it overlays the right side instead of crushing the SQL editor.
+   If AI is off, **Enable AI** in the sidebar enables assistance for the current
+   workspace without granting investigation permission or submitting a prompt.
 4. Ask a question, author SQL, explain the current query or discuss results. The
    context strip follows the current database/table/query; **Send** / **Ctrl+Enter**
    freezes a snapshot. SQL and visible result metadata are included by default;
@@ -107,6 +109,10 @@ and a sidebar conversation is limited to eight turns. Chats are not persisted.
 
 Enable **Allow agent investigation** in the sidebar, then acknowledge the warning
 for that connection. It can also be changed explicitly in **Settings → AI**.
+If AI is off or blocked for that connection, the confirmation explicitly offers
+**Enable AI + investigation** and enables both in one change. Cancelling changes
+neither setting. Read-only preferences disable these actions rather than pretending
+permission was saved. Enabling alone never sends a request; press **Send** separately.
 The default remains tools-off advice. Performance-only **Analyze query** remains
 tools-off even when the sidebar has trusted permission.
 

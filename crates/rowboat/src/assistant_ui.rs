@@ -204,7 +204,25 @@ impl Workbench {
                 .investigation_allowed(&p.id)
         })
     }
-    fn set_assistant_trust(&mut self, enabled: bool, cx: &mut Context<Self>) {
+    fn enable_assistant(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.shared.borrow().writable {
+            self.assistant.error = Some("Preferences are read-only; AI was not enabled.".into());
+        } else {
+            let id = self.profile.as_ref().map(|p| p.id.clone());
+            self.edit_state(|state| {
+                state.preferences.ai.enabled = true;
+                if let Some(id) = id {
+                    state.preferences.ai.disabled_connections.remove(&id);
+                }
+            });
+            self.assistant.error = None;
+            self.assistant
+                .prompt
+                .update(cx, |input, cx| input.focus(window, cx));
+        }
+        cx.notify();
+    }
+    fn set_assistant_trust(&mut self, enabled: bool, window: &mut Window, cx: &mut Context<Self>) {
         let Some(id) = self.profile.as_ref().map(|p| p.id.clone()) else {
             return;
         };
@@ -215,12 +233,21 @@ impl Workbench {
         } else {
             self.edit_state(|state| {
                 if enabled {
+                    // Confirmation explicitly enables both AI and investigation.
+                    // Saving only the tool permission while AI is off makes the
+                    // checkbox look unchecked and leaves Send permanently disabled.
+                    state.preferences.ai.enabled = true;
+                    state.preferences.ai.disabled_connections.remove(&id);
                     state.preferences.ai.investigation_connections.insert(id);
                 } else {
                     state.preferences.ai.investigation_connections.remove(&id);
                 }
             });
             self.assistant.confirm_trust = false;
+            self.assistant.error = None;
+            self.assistant
+                .prompt
+                .update(cx, |input, cx| input.focus(window, cx));
         }
         cx.notify();
     }
@@ -619,6 +646,8 @@ impl Workbench {
         let theme = cx.omarchy().clone();
         let running = self.assistant.request.is_some();
         let trusted = self.assistant_trusted();
+        let allowed = self.assistant_allowed();
+        let writable = self.shared.borrow().writable;
         let scope = self.assistant_scope();
         let mut header = row()
             .p_3()
@@ -887,11 +916,11 @@ impl Workbench {
                     },
                     cx,
                 )
-                .disabled(self.profile.is_none() || running)
+                .disabled(self.profile.is_none() || running || !writable)
                 .debug_selector(|| "assistant-trust".into())
-                .on_click(cx.listener(move |s, _, _, cx| {
+                .on_click(cx.listener(move |s, _, w, cx| {
                     if trusted {
-                        s.set_assistant_trust(false, cx);
+                        s.set_assistant_trust(false, w, cx);
                     } else {
                         s.assistant.confirm_trust = !s.assistant.confirm_trust;
                         cx.notify();
@@ -931,7 +960,10 @@ impl Workbench {
                     div()
                         .id("assistant-context-details")
                         .debug_selector(|| "assistant-context-details".into())
-                        .max_h((window.viewport_size().height - px(390.)).clamp(px(90.), px(300.)))
+                        .max_h(
+                            (window.viewport_size().height - px(if allowed { 390. } else { 500. }))
+                                .clamp(px(90.), px(300.)),
+                        )
                         .overflow_y_scroll()
                         .child(context),
                 )
@@ -1016,11 +1048,14 @@ impl Workbench {
         if let Some(error) = &self.assistant.error {
             composer = composer.child(div().text_color(theme.danger).child(error.clone()));
         }
-        if !self.assistant_allowed() {
-            composer = composer.child(label(
-                "Enable AI for this workspace in AI settings before sending.",
-                cx,
-            ));
+        if !allowed {
+            composer = composer.child(
+                column().gap_2()
+                    .child(label("AI is off for this workspace. Your agent may use a cloud provider and retain logs. Nothing is shared until you press Send.", cx))
+                    .child(ai_action("assistant-enable-ai", "Enable AI", true, writable, cx, |s, w, cx| s.enable_assistant(w, cx))
+                        .debug_selector(|| "assistant-enable-ai".into()))
+                    .when(!writable, |d| d.child(label("Preferences are read-only; AI settings cannot be changed.", cx))),
+            );
         }
         composer = composer
             .child(
@@ -1047,7 +1082,7 @@ impl Workbench {
                                 "assistant-send",
                                 "Send",
                                 true,
-                                self.assistant_allowed()
+                                allowed
                                     && !self.assistant.prompt.read(cx).value().trim().is_empty(),
                                 cx,
                                 |s, w, cx| s.send_assistant_message(w, cx),
@@ -1108,8 +1143,14 @@ impl Workbench {
                     .child(column().gap_3()
                         .child(div().font_weight(FontWeight::SEMIBOLD).text_size(px(18.)).text_color(theme.warning).child("Allow trusted investigation?"))
                         .child("Trusted mode runs agent shell/read tools under your account. It is instructed to use rowboatctl read-only, but can ignore those instructions. It may access files, keyring-backed databases and network services. No sandbox guarantee. Enable only for a trusted agent and this connection.")
-                        .child(outlined_action("assistant-enable-trust", "Enable for this connection", true, cx, |s, _, cx| s.set_assistant_trust(true, cx)).text_color(theme.warning).debug_selector(|| "assistant-enable-trust".into()))
-                        .child(outlined_action("assistant-cancel-trust", "Cancel", true, cx, |s, _, cx| { s.assistant.confirm_trust = false; cx.notify(); })))
+                        .when(!allowed, |d| d.child("AI is currently off for this workspace. Confirming also enables AI assistance and removes this connection's AI block. Nothing is sent until you press Send."))
+                        .when(!writable, |d| d.child(label("Preferences became read-only; investigation permission cannot be changed.", cx)))
+                        .child(outlined_action("assistant-enable-trust", if allowed { "Enable for this connection" } else { "Enable AI + investigation" }, writable, cx, |s, w, cx| s.set_assistant_trust(true, w, cx)).text_color(theme.warning).debug_selector(|| "assistant-enable-trust".into()))
+                        .child(outlined_action("assistant-cancel-trust", "Cancel", true, cx, |s, w, cx| {
+                            s.assistant.confirm_trust = false;
+                            s.assistant.prompt.update(cx, |input, cx| input.focus(w, cx));
+                            cx.notify();
+                        }).debug_selector(|| "assistant-cancel-trust".into())))
             ))
             .into_any_element()
     }
