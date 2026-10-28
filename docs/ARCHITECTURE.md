@@ -10,7 +10,12 @@ and gpui-omarchy supplies themed components and Omarchy theme following.
   MySQL sessions and an embedded SQLite native actor, type decoding, catalogs,
   SQL construction, browsing and transactional row changes.
 - **rowboat-services**: persistence, Secret Service credential integration, OpenSSH
-  forwarding, data transfer, SQL formatting and subprocess backup clients.
+  forwarding, data transfer, SQL formatting, subprocess backup clients and bounded
+  installed-agent orchestration. AI services receive bounded context values,
+  never database handles; provider inference/authentication stays in external CLIs.
+  Explicit trusted investigation may receive one active password-free profile
+  for a temporary, read-only CLI target; this enables agent shell/read tools with
+  instructions, not an enforced tool broker.
 - **rowboat-admin**: typed schema operations and diffs, object catalogs, access
   management SQL, query completion/parameters/EXPLAIN, server metrics.
 - **rowboat**: native application state and views. Database/subprocess work runs on
@@ -57,6 +62,17 @@ visible entity does not move these fields into another connection's state.
 Completion routes include the workspace/session generation so reconnecting
 invalidates old work. The shell aggregates close blockers across retained
 workspaces rather than checking only the visible one.
+
+Workspace AI is a non-modal right sidebar retained by each `Workbench`. The
+UI-independent `rowboat_services::ai_context` DTO and the single
+`assistant_context.rs` projection capture selection, editor revision, separate
+result provenance, completeness and sharing policy. A message freezes context;
+an edited preview is pinned until sent/discarded. Conversations and attachments
+are memory-only and reset on connection/session/database identity changes.
+Advice and trusted modes use the same bounded subprocess/stream lifecycle;
+trusted tool events are accepted without rendering raw arguments/output.
+Performance review retains its focused UI and can seed the sidebar without
+sending a request. Context capture performs no database operations.
 
 Profiles/history/snippets use one shared state model and serialized writer.
 Recovery likewise has one lock/writer per window data directory, combining

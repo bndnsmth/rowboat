@@ -34,6 +34,75 @@ cargo fmt --manifest-path crates/rowboat/editor-tests/Cargo.toml -- --check
 Its additional network cases also remain opt-in. TestPlatform success does not
 replace native keyboard, rendering, connection and file-dialog acceptance.
 
+`ai_performance` covers tabbed draft settings, reviewed-context-only submission,
+automatic untouched-preview updates, preservation of edited/redacted context,
+stale/cancelled response rejection, follow-up review and suggestion tabs that never
+execute SQL. It uses disposable SQLite and fake/nonexistent executables. Services and CLI AI
+tests exercise all three stream adapters, incompatible installations, explicit
+sharing consent, connection-disable policy, bounded output, cancellation, private
+temporary-file cleanup and database-environment removal. They never contact a
+user's installed agent, model account or saved connection. See [AI assistance](AI.md)
+for the separate real-account acceptance boundary.
+
+Codex fixtures replay its nonfatal disabled-host startup notice followed by valid
+advice, while decoder regressions still reject actual tool events, unknown item
+errors and failed turns. Provider-switch GUI tests verify draft-only override
+clearing and preservation when reselecting the same provider.
+
+`ai_ux` checks the top-right global entry, welcome-without-SQL-or-sharing behavior,
+sidebar docking/narrow overlay and pointer resize, plus shared dialog keyboard
+resizing, maximize/restore,
+window-size clamping and retained preference drafts. The existing connection-form
+keyboard regression also traverses the shared resize/maximize footer and keeps
+Tab/Shift+Tab within the modal. Passive advice-formatting tests keep incomplete
+SQL fences non-actionable and render remote image/link text without activation.
+
+`assistant` checks snapshot provenance, opt-in selected values, explicit trusted
+consent/revocation, editable pinned previews, bounded conversation follow-ups,
+new SQL tabs without execution, Ctrl+Enter input ownership and stale-response
+rejection after a session change. Service tests verify all three trusted tool
+configurations/decoders, opt-in gating, private exact-target read-only profiles
+and tool-payload exclusion. The CLI `ai` regression launches fake agents for all
+three providers; those agents use the actual built CLI against an explicitly
+created disposable SQLite file, verify SELECT output and reject a write. No
+installed agent/model account or user connection is used. The SQLite target matrix
+covers open-existing/create-if-missing profiles with both absolute and relative
+paths. Service tests check missing files are never created and TLS/SSH paths retain
+their original working-directory resolution (not live TLS/SSH connections).
+
+The sidebar regression also checks the 40px single-row Context toolbar,
+mouse/keyboard re-expansion, sharing/draft/pinned-preview preservation, automatic
+collapse on Send, and pending activity throughout partial responses and cancellation.
+Focused performance review checks the same activity indicator's pending/completed
+lifecycle. Native acceptance should compare waiting frames from a delayed fake
+agent to verify motion, then check that the indicator disappears on completion.
+With reduced motion enabled it should remain a static activity indicator instead.
+
+Sidebar regressions also preserve edited/redacted previews across repeated Review
+context clicks and closing/reopening, and preserve explicit sharing exclusions
+instead of reapplying global defaults on every reopen.
+Activation cases start with AI off or the connection blocked, cancel/confirm the
+trust warning, then click the actual rendered Send button and verify a completed
+fake-agent response. Separate cases cover advice-only activation without tools,
+unchanged unrelated connection blocks and preferences becoming read-only during
+confirmation. Enabling alone must not invoke the agent or execute SQL.
+An isolated native Wayland check also started with AI off, confirmed investigation,
+observed the checked toggle/enabled Send button, then clicked Send and received a
+fake-agent response after a real read-only query returned `id = 7` from disposable SQLite.
+
+Native AI acceptance should use an isolated `ROWBOAT_DATA_DIR`, a disposable
+SQLite file and a fake agent. Inspect the welcome, context review, completed
+advice/SQL card and resized views; verify no agent invocation occurs before
+**Analyze query**, and no suggested SQL is executed. Do not restart an existing
+user preview or copy its saved profiles into automated test fixtures.
+
+For native sidebar acceptance, also exercise non-modal work, Ctrl+Enter Send,
+context review, trusted consent, a fake-agent read-only CLI investigation, SQL
+cards and resizing. After Send, expand **Context** to access the sharing/trust
+controls again. Build both `rowboat` and `rowboat-cli` so investigation can
+resolve `rowboatctl`. Slow virtual-keyboard typing enough for native event
+processing; missing automated input is not evidence of a successful send.
+
 `connection_polish` covers inline validation/focus and revealing advanced errors,
 real disposable SQLite test success/failure, stale-feedback invalidation, original
 host/live-schema context, and clicking/dragging the results scrollbars without SQL

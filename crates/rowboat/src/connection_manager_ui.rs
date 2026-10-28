@@ -871,9 +871,8 @@ impl WorkspaceShell {
                         .on_click(cx.listener(|s, _, w, cx| s.manager_transfer(false, w, cx))),
                 )
             });
-        div().absolute().inset_0().occlude().flex().items_center().justify_center().bg(black().opacity(0.55))
-            .child(column().id("connection-manager").debug_selector(|| "connection-manager".into())
-                .key_context("RowboatModal").track_focus(&self.modal_focus)
+        let surface = column().id("connection-manager").debug_selector(|| "connection-manager".into())
+                .key_context("RowboatModal")
                 .w(px(760.).min(w.viewport_size().width - px(32.)))
                 .h(px(660.).min(w.viewport_size().height - px(32.)))
                 .bg(t.background.opacity(1.)).text_size(px(13.)).border_1().border_color(t.border).rounded(px(8.)).shadow_lg()
@@ -883,7 +882,14 @@ impl WorkspaceShell {
                  .when_some(self.error.clone().filter(|_| !self.has_main_workspace()), |d, error| d.child(div().px_4().py_2().text_color(t.danger).child(error)))
                 .when_some(manager.message.clone().filter(|_| manager.error.is_none()), |d, message| d.child(label(message, cx).px_4().py_2()))
                 .when(!writable, |d| d.child(label("Profile storage is read-only or unavailable. Browsing and switching workspaces remain available.", cx).px_4().py_2()))
-                .child(footer)).into_any_element()
+                 .child(footer);
+        self.dialogs.overlay(
+            "connections",
+            w.viewport_size(),
+            &self.modal_focus,
+            surface,
+            cx,
+        )
     }
     #[cfg(test)]
     #[allow(dead_code)] // Called by the isolated actual-GPUI harness.

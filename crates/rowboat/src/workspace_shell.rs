@@ -189,6 +189,7 @@ pub struct WorkspaceShell {
     error: Option<String>,
     focus: FocusHandle,
     modal_focus: FocusHandle,
+    dialogs: crate::dialog::DialogLayout,
     _poll: Task<()>,
 }
 impl WorkspaceShell {
@@ -360,6 +361,7 @@ impl WorkspaceShell {
             error: None,
             focus,
             modal_focus: cx.focus_handle(),
+            dialogs: Default::default(),
             _poll: poll,
         }
     }
@@ -1395,6 +1397,49 @@ impl Drop for WorkspaceShell {
         self.stop_writers();
     }
 }
+
+impl WorkspaceShell {
+    fn global_ai_button(&self, enabled: bool, cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.omarchy().clone();
+        ui::with_tooltip(
+            ui::button("global-ai", "", ui::ButtonVariant::Outline, cx)
+                .accessibility_label("Open AI assistant")
+                .debug_selector(|| "global-ai".into())
+                .h(px(30.))
+                .px_3()
+                .rounded(px(5.))
+                .border_color(theme.accent.opacity(0.5))
+                .bg(theme.accent.opacity(0.1))
+                .text_color(theme.accent)
+                .child(ui::icon(ui::IconName::Sparkles).size(px(15.)))
+                .child("AI")
+                .disabled(!enabled)
+                .on_click(cx.listener(|s, _, w, cx| {
+                    if s.closing.is_some()
+                        || s.restore.is_some()
+                        || s.live_diff.is_some()
+                        || s.connection_manager.is_some()
+                    {
+                        return;
+                    }
+                    if let Some(entity) = s
+                        .workspaces
+                        .iter()
+                        .find(|workspace| workspace.id == s.active && workspace.host.is_none())
+                        .map(|workspace| workspace.entity.clone())
+                    {
+                        entity.update(cx, |s, cx| s.open_ai_assistant(w, cx));
+                    }
+                })),
+            if enabled {
+                "Toggle workspace AI · context is shared only on Send"
+            } else {
+                "Open a workspace to use AI"
+            },
+        )
+        .into_any_element()
+    }
+}
 impl Workbench {
     pub fn close_state(&self) -> CloseState {
         CloseState {
@@ -1436,12 +1481,25 @@ impl Workbench {
 }
 impl Render for WorkspaceShell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.closing.is_none() && self.live_diff.is_none() && self.connection_manager.is_none() {
+            self.dialogs.stop_drag();
+        }
         if (self.closing.is_some() || self.live_diff.is_some() || self.connection_manager.is_some())
             && (self.focus.is_focused(window) || window.focused(cx).is_none())
         {
             window.focus(&self.modal_focus, cx);
         }
         let theme = cx.omarchy().clone();
+        let ai_available = self.initialized
+            && self.closing.is_none()
+            && self.restore.is_none()
+            && self.live_diff.is_none()
+            && self.connection_manager.is_none()
+            && self
+                .workspaces
+                .iter()
+                .find(|workspace| workspace.id == self.active && workspace.host.is_none())
+                .is_some_and(|workspace| workspace.entity.read(cx).ai_entry_enabled());
         let available = self.initialized
             && self.closing.is_none()
             && self.live_diff.is_none()
@@ -1844,7 +1902,8 @@ impl Render for WorkspaceShell {
                                 .on_click(
                                     cx.listener(|s, _, w, cx| s.show_connection_manager(w, cx)),
                                 ),
-                            ),
+                            )
+                            .child(self.global_ai_button(ai_available, cx)),
                     ),
             );
         if let Some(workspace) = self
@@ -2045,52 +2104,44 @@ impl Render for WorkspaceShell {
                         })),
                     )
                 });
-            root = root.child(
-                div()
-                    .occlude()
-                    .absolute()
-                    .inset_0()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .bg(black().opacity(0.6))
-                    .child(
-                        div()
-                            .id("workspace-close-guard")
-                            .debug_selector(|| "workspace-close-guard".into())
-                            .track_focus(&self.modal_focus)
-                            .w(px(480.).min(window.viewport_size().width - px(32.)))
-                            .max_h(window.viewport_size().height - px(60.))
-                            .overflow_y_scroll()
-                            .bg(theme.background)
-                            .border_1()
-                            .border_color(theme.border)
-                            .rounded(px(8.))
-                            .flex()
-                            .flex_col()
-                            .child(
-                                div()
-                                    .p_5()
-                                    .flex()
-                                    .flex_col()
-                                    .gap_3()
-                                    .child(
-                                        div()
-                                            .text_size(px(16.))
-                                            .font_weight(FontWeight::SEMIBOLD)
-                                            .child(
-                                                if matches!(self.closing, Some(Closing::Window)) {
-                                                    "Close Rowboat?"
-                                                } else {
-                                                    "Close workspace?"
-                                                },
-                                            ),
-                                    )
-                                    .child(details),
-                            )
-                            .child(buttons),
-                    ),
-            );
+            let surface = div()
+                .id("workspace-close-guard")
+                .debug_selector(|| "workspace-close-guard".into())
+                .w(px(480.).min(window.viewport_size().width - px(32.)))
+                .max_h(window.viewport_size().height - px(60.))
+                .overflow_y_scroll()
+                .bg(theme.background)
+                .border_1()
+                .border_color(theme.border)
+                .rounded(px(8.))
+                .flex()
+                .flex_col()
+                .child(
+                    div()
+                        .p_5()
+                        .flex()
+                        .flex_col()
+                        .gap_3()
+                        .child(
+                            div()
+                                .text_size(px(16.))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child(if matches!(self.closing, Some(Closing::Window)) {
+                                    "Close Rowboat?"
+                                } else {
+                                    "Close workspace?"
+                                }),
+                        )
+                        .child(details),
+                )
+                .child(buttons);
+            root = root.child(self.dialogs.overlay(
+                "close-workspace",
+                window.viewport_size(),
+                &self.modal_focus,
+                surface,
+                cx,
+            ));
         }
         root
     }

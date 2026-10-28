@@ -48,7 +48,8 @@ gpui_kit::actions!(
         CompleteSql,
         CloseQuery,
         CommandPalette,
-        ShowPreferences
+        ShowPreferences,
+        SendAssistant
     ]
 );
 
@@ -173,6 +174,9 @@ pub enum Event {
     Dashboard(Box<crate::dashboards_ui::Sampled>),
     DataTransfer(Box<crate::data_transfer_ui::DataTransferEvent>),
     Explained(Box<crate::explain_ui::Explained>),
+    AgentChecked(Box<crate::preferences_ui::AgentChecked>),
+    Ai(Box<crate::ai_ui::AiEvent>),
+    Assistant(Box<crate::assistant_ui::AssistantEvent>),
     Object(Box<crate::objects_ui::ObjectEvent>),
     Relationships(Box<crate::relationships_ui::Loaded>),
     Profiles(crate::profiles_ui::ProfileEvent),
@@ -246,6 +250,7 @@ pub struct ConnectionWorkspace {
     pub objects: crate::objects_ui::ObjectState,
     pub dashboards: crate::dashboards_ui::DashboardState,
     pub explain: Option<crate::explain_ui::ExplainState>,
+    pub(crate) assistant: crate::assistant_ui::Assistant,
     pub(crate) startup: Startup,
     pub(crate) startup_connect: Option<ConnectionProfile>,
     pub(crate) session_ready: bool,
@@ -331,6 +336,7 @@ pub struct ConnectionWorkspace {
     pub focus: FocusHandle,
     pub custom_metrics: crate::custom_metrics_ui::CustomMetrics,
     pub modal_focus: FocusHandle,
+    pub(crate) dialogs: crate::dialog::DialogLayout,
     pub viewport: Size<Pixels>,
     pub host_epoch: u64,
     pub explorer_cursor: usize,
@@ -537,6 +543,7 @@ impl Workbench {
             objects: Default::default(),
             dashboards: Default::default(),
             explain: None,
+            assistant: crate::assistant_ui::Assistant::new(window, cx),
             startup,
             startup_connect: None,
             runtime,
@@ -633,6 +640,7 @@ impl Workbench {
             focus,
             custom_metrics: Default::default(),
             modal_focus: cx.focus_handle(),
+            dialogs: Default::default(),
             viewport: window.viewport_size(),
             host_epoch: 0,
             explorer_cursor: 0,
@@ -760,6 +768,7 @@ impl Workbench {
             cx.notify();
         }
         drop(shared);
+        self.sync_assistant_scope();
         let events: Vec<_> = self.rx.try_iter().collect();
         if events.is_empty() {
             return;
@@ -793,7 +802,10 @@ impl Workbench {
                 Event::Recovery(event) => self.receive_recovery(*event, cx),
                 Event::Dashboard(event) => self.receive_dashboard(*event, cx),
                 Event::DataTransfer(event) => self.receive_data_transfer(*event, cx),
-                Event::Explained(event) => self.receive_explained(*event, cx),
+                Event::Explained(event) => self.receive_explained(*event, window, cx),
+                Event::AgentChecked(event) => self.receive_agent_checked(*event, cx),
+                Event::Ai(event) => self.receive_ai(*event, cx),
+                Event::Assistant(event) => self.receive_assistant(*event, cx),
                 Event::Object(event) => self.receive_object(*event, cx),
                 Event::Relationships(loaded) => self.receive_relationships(*loaded, cx),
                 Event::Profiles(event) => self.receive_profiles(event, cx),

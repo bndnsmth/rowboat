@@ -22,8 +22,11 @@ See [DISTRIBUTION.md](DISTRIBUTION.md) for build and release requirements.
 - Better SQL diagnostics and conservative expansion of completion coverage.
 - Additional structured-value viewers and accessibility improvements.
 - Artifact provenance/attestations and an explicit update strategy.
+- Expand workspace AI/performance review with verified referenced-table context,
+  saved investigations, enforced tool capabilities and evidence-based before/after
+  plan comparison. Trusted v1 investigation is instruction-guided, not confined.
 
-Windows, additional database engines, plugins, AI integrations and query-result
+Windows, additional database engines, plugins, autonomous AI tooling and query-result
 charts depend on demonstrated demand and suitable implementation boundaries.
 
 Every change must preserve explicit Review → Apply, bounded memory, independent

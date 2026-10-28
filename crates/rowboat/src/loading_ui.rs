@@ -84,6 +84,24 @@ pub fn status(window: &Window, cx: &App) -> AnyElement {
     current(Current::Status, window, cx)
 }
 
+/// An indeterminate agent heartbeat, not a claim of model/token progress. Like
+/// database activity, it stops animating for hidden windows or reduced motion.
+pub fn agent_status(
+    id: &'static str,
+    message: &'static str,
+    window: &Window,
+    cx: &App,
+) -> AnyElement {
+    crate::view::row()
+        .id(id)
+        .debug_selector(move || id.into())
+        .flex_shrink_0()
+        .text_color(cx.omarchy().accent)
+        .child(status(window, cx))
+        .child(message)
+        .into_any_element()
+}
+
 pub fn rail(window: &Window, cx: &App) -> AnyElement {
     current(Current::Rail, window, cx)
 }

@@ -44,6 +44,8 @@ pub enum Command {
     Preferences,
     Objects,
     Dashboard,
+    Explain,
+    Ai,
 }
 impl Command {
     fn all() -> &'static [(Self, &'static str)] {
@@ -94,6 +96,8 @@ impl Command {
             (Self::Preferences, "Application preferences / shortcuts…"),
             (Self::Objects, "Show grouped object explorer"),
             (Self::Dashboard, "Show saved metrics dashboards"),
+            (Self::Explain, "Explain query / AI performance review…"),
+            (Self::Ai, "Open AI query assistant…"),
         ]
     }
 }
@@ -226,6 +230,13 @@ impl Workbench {
             Command::Preferences => !self.close_requested,
             Command::Objects => clean && connected,
             Command::Dashboard => clean && connected,
+            Command::Explain => {
+                clean
+                    && connected
+                    && self.page == Page::Query
+                    && self.admin_supported(rowboat_admin::providers::Operation::Explain)
+            }
+            Command::Ai => self.ai_entry_enabled(),
         }
     }
     pub fn palette_items(&self, cx: &App) -> Vec<Item> {
@@ -456,6 +467,8 @@ impl Workbench {
                 Command::Preferences => self.show_preferences(window, cx),
                 Command::Objects => self.show_objects_page(cx),
                 Command::Dashboard => self.show_dashboards(cx),
+                Command::Explain => self.explain_query(window, cx),
+                Command::Ai => self.open_ai_assistant(window, cx),
             },
         }
         cx.notify();

@@ -1023,28 +1023,23 @@ impl WorkspaceShell {
                     .child(ui::button("apply-live-diff",if dialog.definition.is_some(){"Recheck BOTH endpoints & apply reviewed plan"}else{"Recheck destination & apply reviewed plan"},ui::ButtonVariant::Danger,cx).disabled(busy||!ready||!writable).on_click(cx.listener(|s,_,_,cx|s.start_diff(true,cx))));
             }
         }
-        div()
-            .occlude()
-            .absolute()
-            .inset_0()
-            .flex()
-            .items_center()
-            .justify_center()
-            .bg(black().opacity(0.65))
-            .child(
-                div()
-                    .id("live-schema-comparison")
-                    .key_context("RowboatModal")
-                    .track_focus(&self.modal_focus)
-                    .w(px(1020.).min(window.viewport_size().width - px(32.)))
-                    .max_h(window.viewport_size().height - px(60.))
-                    .overflow_y_scroll()
-                    .bg(theme.background)
-                    .border_1()
-                    .border_color(theme.border)
-                    .child(body),
-            )
-            .into_any_element()
+        let surface = div()
+            .id("live-schema-comparison")
+            .key_context("RowboatModal")
+            .w(px(1020.).min(window.viewport_size().width - px(32.)))
+            .max_h(window.viewport_size().height - px(60.))
+            .overflow_y_scroll()
+            .bg(theme.background)
+            .border_1()
+            .border_color(theme.border)
+            .child(body);
+        self.dialogs.overlay(
+            "schema-comparison",
+            window.viewport_size(),
+            &self.modal_focus,
+            surface,
+            cx,
+        )
     }
 }
 fn validate_review(review: &Review, current: &Binding) -> Result<(), String> {

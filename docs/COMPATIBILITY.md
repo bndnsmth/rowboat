@@ -22,6 +22,12 @@ retain their identity. Recovery never restores a live session, reruns SQL or
 reuses persisted query-edit authorization. SQL/history can contain sensitive
 user-authored literals even though credential fields are excluded.
 
+AI preferences are additive and default to disabled when absent. Saving the new
+preferences writes an `ai` section; older releases that reject unknown preference
+fields may refuse that newer state rather than discard it. Use an isolated
+`ROWBOAT_DATA_DIR` for development testing alongside 0.1.1, and back up app data
+before downgrading. AI context/advice is not added to the state/recovery formats.
+
 ## Environment aliases
 
 Legacy `KEEL_` aliases remain for `PASSWORD`, `URL`, `SSH_KNOWN_HOSTS`, `SOURCE_URL`,

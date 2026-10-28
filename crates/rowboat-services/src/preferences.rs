@@ -16,6 +16,7 @@ pub struct Preferences {
     /// Retained query-result data per execution, independent of the row limit.
     pub query_result_limit_mib: usize,
     pub shortcuts: BTreeMap<String, String>,
+    pub ai: crate::ai::AiPreferences,
 }
 impl Default for Preferences {
     fn default() -> Self {
@@ -28,6 +29,7 @@ impl Default for Preferences {
             query_row_limit: 10_000,
             query_result_limit_mib: 256,
             shortcuts: BTreeMap::new(),
+            ai: Default::default(),
         }
     }
 }
@@ -155,6 +157,7 @@ impl Preferences {
         );
         self.query_result_limit_bytes()?;
         self.effective_shortcuts()?;
+        self.ai.validate()?;
         Ok(())
     }
     pub fn effective_shortcuts(&self) -> Result<BTreeMap<String, String>> {

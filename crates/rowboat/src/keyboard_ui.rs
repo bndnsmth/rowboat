@@ -2,6 +2,7 @@
 use crate::app::*;
 use gpui_kit::*;
 pub fn bind(cx: &mut App) {
+    bind_assistant(cx);
     cx.bind_keys([
         KeyBinding::new("up", NamespaceUp, Some("RowboatNamespace > Input")),
         KeyBinding::new("down", NamespaceDown, Some("RowboatNamespace > Input")),
@@ -24,6 +25,16 @@ pub fn bind(cx: &mut App) {
         KeyBinding::new("home", ExplorerFirst, Some("RowboatExplorer > Input")),
         KeyBinding::new("end", ExplorerLast, Some("RowboatExplorer > Input")),
         KeyBinding::new("enter", ExplorerOpen, Some("RowboatExplorer > Input")),
+    ]);
+}
+pub fn bind_assistant(cx: &mut App) {
+    cx.bind_keys([
+        KeyBinding::new(
+            "ctrl-enter",
+            SendAssistant,
+            Some("RowboatAssistant > Input"),
+        ),
+        KeyBinding::new("ctrl-enter", SendAssistant, Some("RowboatAssistant")),
     ]);
 }
 pub fn modal_focus(reverse: bool, handle: &FocusHandle, w: &mut Window, cx: &mut App) {

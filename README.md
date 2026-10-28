@@ -34,6 +34,10 @@ tier to unlock the good stuff.
 - **Keep your place.** Independent connection workspaces, multiple windows, saved
   queries, and searchable history. SQL drafts and layouts recover after a restart;
   your queries don't quietly rerun themselves.
+- **Bring your own agent.** A workspace-aware AI sidebar and focused performance
+  review through installed Codex, Claude Code or OpenCode V2. Control shared context
+  and open suggested SQL without running it. Optional trusted investigation enables
+  agent tools with read-only instructions—not confinement. [AI assistance →](docs/AI.md)
 - **Connect on your terms.** PostgreSQL and MySQL over TLS or SSH; SQLite straight
   from a file. Passwords stay in memory or your system keyring, not connection JSON.
 
