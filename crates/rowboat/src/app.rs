@@ -480,7 +480,7 @@ impl Workbench {
                 let _ = this.update_in(cx, |this, window, cx| this.poll(window, cx));
             }
         });
-        let explorer_filter = forms::input("", "Filter tables…", window, cx);
+        let explorer_filter = forms::input("", "Filter loaded objects…", window, cx);
         let quick_filter = forms::input(
             "",
             "Search commands, tables, favorites, connections…",
@@ -492,6 +492,7 @@ impl Workbench {
             cx.subscribe(&explorer_filter, |s, _, event: &InputEvent, cx| {
                 if matches!(event, InputEvent::Change) {
                     s.namespace.collapsed = [false, false];
+                    s.expand_loaded_sidebar_groups();
                 }
                 s.explorer_page = 0;
                 s.explorer_cursor = 0;
@@ -922,9 +923,11 @@ impl Workbench {
                                 );
                                 self.connection_flow.replaced_unknown = false;
                             }
-                            self.edit_state(|state| {
-                                state.last_connection_id = Some(profile.id.clone())
-                            });
+                            if !self.connection_flow.reconnecting {
+                                self.edit_state(|state| {
+                                    state.last_connection_id = Some(profile.id.clone())
+                                });
+                            }
                             self.database = Some(db);
                             self.transaction = false;
                             self.transaction_known = true;
@@ -935,6 +938,7 @@ impl Workbench {
                             self.tunnel = tunnel;
                             self.accept_namespace(catalog, None, cx);
                             self.form = None;
+                            self.connection_flow.reconnecting = false;
                             self.table = None;
                             self.table_result = QueryResult::default();
                             self.structure = Structure::default();
@@ -1191,6 +1195,7 @@ impl Workbench {
             return;
         }
         let existing = profile.is_some();
+        self.connection_flow.reconnecting = false;
         let profile = profile.unwrap_or_default();
         let password = self.passwords.get(&profile.id).cloned().unwrap_or_default();
         self.form = Some(ConnectionForm::new(profile, password, window, cx));
@@ -1260,7 +1265,7 @@ impl Workbench {
         if self.close_requested {
             return;
         }
-        if !self.shared.borrow().writable {
+        if !(connect && self.connection_flow.reconnecting) && !self.shared.borrow().writable {
             self.fail("Local metadata writes are disabled because the data directory is not exclusively available or could not be loaded.".into());
             cx.notify();
             return;
@@ -1289,6 +1294,15 @@ impl Workbench {
         if connect && (self.transaction || !self.transaction_known) {
             self.fail("Commit or roll back the active transaction before reconnecting".into());
             cx.notify();
+            return;
+        }
+        if connect && self.connection_flow.reconnecting {
+            self.startup.autorun = false;
+            if self.database.is_some() {
+                self.probe_reconnect(cx);
+            } else {
+                self.connect_profile(profile, password, cx);
+            }
             return;
         }
         self.busy = true;
@@ -1776,9 +1790,15 @@ impl Workbench {
     }
 
     pub fn refresh_catalog(&mut self, cx: &mut Context<Self>) {
-        if self.has_row_draft() || !self.changes.is_empty() || self.modal_open() {
+        if self.busy
+            || self.close_requested
+            || self.has_row_draft()
+            || !self.changes.is_empty()
+            || self.modal_open()
+        {
             return;
         }
+        self.invalidate_sidebar_objects();
         self.load_namespace(self.namespace.selected.clone(), false, cx);
     }
 

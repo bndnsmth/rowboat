@@ -23,10 +23,10 @@ See [distribution](DISTRIBUTION.md) for the exact requirements and release gates
 
 | Area | Available | Important limits |
 | --- | --- | --- |
-| Connections | Saved/grouped profiles, concurrent workspaces, connection testing, portable import/export | No OS deep links or SQLite URI/in-memory profiles |
+| Connections | Saved/grouped profiles, concurrent workspaces, connection testing, explicit Reconnect, portable import/export | Reconnect does not restore session-local state; unknown outcomes require confirmation and a recovery checkpoint; no OS deep links or SQLite URI/in-memory profiles |
 | Security | TLS/CA/hostname/mTLS, SSH key/agent tunnels, optional system keyring, password-free profile JSON | Read-only mode is not a replacement for restricted database roles |
 | Workspaces | Independent sessions, transactions, SQL tabs, split editors, multiple windows, SQL/layout recovery | Result sets and live sessions are not recovered; recovered edits require revalidation |
-| Navigation | Schema/object explorer, command palette, PostgreSQL/MySQL database selection, independent PostgreSQL schema filtering, FK navigation | PostgreSQL database changes require a fresh session; engine-specific tools depend on catalog permissions |
+| Navigation | Sidebar Tables/Views and on-demand Procedures/Functions/Triggers/PostgreSQL Sequences, command palette, PostgreSQL/MySQL database selection, independent PostgreSQL schema filtering, FK navigation | Search covers loaded groups; PostgreSQL database changes require a fresh session; engine-specific tools depend on catalog permissions |
 | Grid | Virtualized rows, visible draggable scrollbars on overflowing axes, pagination, filters, column sizing, exact numeric local sorting, rectangular/row selection | Local text sorting does not reproduce database collation |
 | Row editing | Insert, duplicate, update/delete, NULL/binary/multiline values, paste/fill, SQL review and explicit Apply | Complete original primary keys and optimistic conflict checks are required |
 | Query-result editing | Explicit editing run for supported single-table direct projections, aliases and complete keys | Update-only; no joins, CTEs, expressions, temporary sources or caller transactions |
@@ -76,6 +76,27 @@ and do not replay SQL or change the saved profile's default database. Session-lo
 settings and temporary objects do not transfer. Opening a database in a separate
 workspace instead retains both physical sessions. Live disposable PostgreSQL/MySQL
 and headless GUI regressions cover these flows; native visual acceptance remains separate.
+
+The left **Database objects** sidebar exposes supported groups directly. Expand a
+routine/trigger/sequence group to load its catalog; select an object to inspect its
+definition, never to execute it. Views remain browseable as relations, including
+PostgreSQL materialized views. Search includes loaded names/signatures and trigger
+parents; the explorer shares a 200-object page across groups. Group reload and
+catalog refresh are explicit. Namespace/session changes invalidate these caches.
+SQLite currently exposes only Tables and Views in this sidebar; roles remain in
+the access tools, not the object tree.
+
+**Reconnect** is available in the workspace header, Connection menu, command
+palette and operation-error panel. It retains SQL drafts and parameters, uses the
+active target rather than a saved default database, and does not save profile or
+keyring changes or replay SQL. It checks the old session's transaction state;
+known active transactions must finish first. An unavailable/unknown session needs
+explicit unconfirmed-outcome acknowledgement and a successful durable recovery
+checkpoint before replacement. Staged edits remain detached evidence, never
+automatically rebound/applied. This checkpoint requires writable local recovery
+storage. Session settings, temporary tables and attached SQLite databases do not
+transfer to the new physical session. There is no background health check or
+automatic reconnect/retry of failed SQL.
 
 ## Engine-specific tools
 

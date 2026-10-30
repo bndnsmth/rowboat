@@ -10,10 +10,12 @@ use std::time::Duration;
 
 #[derive(Default)]
 pub struct State {
+    pub reconnecting: bool,
     pub replacement: Option<uuid::Uuid>,
     pub replaced_unknown: bool,
     draft: Option<(uuid::Uuid, String)>,
     checkpoint: Option<tokio::sync::oneshot::Receiver<Result<(), String>>>,
+    reconnect_probe: Option<(uuid::Uuid, uuid::Uuid, String)>,
 }
 pub enum ConnectionEvent {
     Tested {
@@ -27,9 +29,82 @@ pub enum ConnectionEvent {
         request: uuid::Uuid,
         active: Option<bool>,
     },
+    ReconnectProbed {
+        request: uuid::Uuid,
+        active: Option<bool>,
+    },
 }
 
 impl Workbench {
+    pub(crate) fn reconnect_available(&self) -> bool {
+        !self.busy
+            && !self.close_requested
+            && self.session_ready
+            && self.owner.is_some()
+            && !self.shared.borrow().shell_modal_open
+            && (!self.modal_open() || self.quick_open)
+            && !self.library.file_pending
+            && !self.has_row_draft()
+            && (self.database.as_ref().is_some_and(Database::is_retired)
+                || !self.transaction_known
+                || !self.transaction && self.changes.is_empty())
+    }
+
+    pub(crate) fn reconnect(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.reconnect_available() {
+            return;
+        }
+        if self.database.as_ref().is_some_and(Database::is_retired) {
+            // The last observed transaction bit is not proof of a closed
+            // session's outcome. Use the existing explicit replacement flow.
+            self.transaction_known = false;
+            self.namespace.known = false;
+        }
+        let mut profile = self.profile.clone().or_else(|| {
+            self.owner
+                .as_ref()
+                .and_then(|id| self.state.connections.iter().find(|p| &p.id == id))
+                .cloned()
+        });
+        if let Some(file) = profile.as_mut().and_then(|p| p.file.as_mut()) {
+            file.mode = SqliteOpenMode::OpenExisting;
+        }
+        let password = self.session_password.clone();
+        let had_session = self.database.is_some();
+        // Use the active database and original credentials, not a saved default
+        // database. Opening this form neither saves settings nor replays SQL.
+        self.edit_connection(profile, window, cx);
+        if let Some(form) = &mut self.form {
+            self.connection_flow.reconnecting = true;
+            if !form.is_file() && had_session {
+                form.credential_request = None;
+                form.keyring_loading = false;
+                form.set_password(password, window, cx);
+            }
+        }
+    }
+
+    pub(crate) fn probe_reconnect(&mut self, cx: &mut Context<Self>) {
+        let (Some(db), Some(form)) = (self.database.clone(), &self.form) else {
+            return;
+        };
+        let request = uuid::Uuid::new_v4();
+        self.connection_flow.reconnect_probe = Some((request, form.instance, form.fingerprint(cx)));
+        self.busy = true;
+        self.status = "Verifying the old session before reconnecting…".into();
+        let tx = self.tx.clone();
+        self.runtime.spawn(async move {
+            let active = tokio::time::timeout(Duration::from_secs(5), db.in_transaction())
+                .await
+                .ok()
+                .and_then(Result::ok);
+            let _ = tx.send(Event::Connection(Box::new(
+                ConnectionEvent::ReconnectProbed { request, active },
+            )));
+        });
+        cx.notify();
+    }
+
     pub(crate) fn prepare_connection_action(
         &mut self,
         window: &mut Window,
@@ -221,6 +296,51 @@ impl Workbench {
 
     pub(crate) fn receive_connection(&mut self, event: ConnectionEvent, cx: &mut Context<Self>) {
         match event {
+            ConnectionEvent::ReconnectProbed { request, active } => {
+                let Some((pending, instance, fingerprint)) = &self.connection_flow.reconnect_probe
+                else {
+                    return;
+                };
+                if *pending != request {
+                    return;
+                }
+                let current = self.connection_flow.reconnecting
+                    && !self.close_requested
+                    && self.form.as_ref().is_some_and(|form| {
+                        form.instance == *instance && form.fingerprint(cx) == *fingerprint
+                    });
+                self.connection_flow.reconnect_probe = None;
+                self.busy = false;
+                // Keep physical-session evidence even if the form changed or a
+                // close was requested while the probe was in flight.
+                self.transaction_known = active.is_some();
+                if let Some(active) = active {
+                    self.transaction = active;
+                } else {
+                    self.namespace.known = false;
+                }
+                if !current {
+                    self.fail("Connection draft changed; review and reconnect again. The old session was retained.".into());
+                } else if active == Some(false) {
+                    let form = self.form.as_ref().unwrap();
+                    match form.profile(cx) {
+                        Ok(profile) => {
+                            let password = if form.is_file() {
+                                String::new()
+                            } else {
+                                form.password_value(cx)
+                            };
+                            self.connect_profile(profile, password, cx);
+                        }
+                        Err(error) => self.fail(error.to_string()),
+                    }
+                } else if active == Some(true) {
+                    self.fail("Session was not replaced: Commit or roll back the active transaction before reconnecting.".into());
+                } else {
+                    self.form.as_mut().unwrap().confirm_replace = false;
+                    self.fail("The old session could not be verified. Review the unconfirmed-outcome warning and confirm replacement to reconnect; nothing was replayed.".into());
+                }
+            }
             ConnectionEvent::Tested {
                 request,
                 instance,

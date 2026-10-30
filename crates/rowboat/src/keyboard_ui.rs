@@ -253,19 +253,13 @@ impl Workbench {
         }
         self.grid_x_scroll.set_offset(offset);
     }
-    pub fn explorer_key(&mut self, key: &str, cx: &mut Context<Self>) {
+    pub fn explorer_key(&mut self, key: &str, window: &mut Window, cx: &mut Context<Self>) {
         if self.modal_open() || self.close_requested {
             return;
         }
         let items = self.explorer_items(cx);
-        let kinds = items
-            .iter()
-            .map(|i| crate::namespace_ui::is_view(i))
-            .collect::<Vec<_>>();
-        let tables = items
-            .into_iter()
-            .map(|i| i.table.clone())
-            .collect::<Vec<_>>();
+        let kinds = items.iter().map(|i| i.group()).collect::<Vec<_>>();
+        let tables = items.into_iter().map(|i| i.target()).collect::<Vec<_>>();
         if tables.is_empty() {
             return;
         }
@@ -276,14 +270,29 @@ impl Workbench {
             "home" => self.explorer_cursor = 0,
             "end" => self.explorer_cursor = tables.len() - 1,
             _ => {
-                self.open_table(tables[self.explorer_cursor].clone(), cx);
+                let target = tables.into_iter().nth(self.explorer_cursor).unwrap();
+                self.open_explorer_target(target, window, cx);
+                return;
             }
         }
         self.explorer_page = self.explorer_cursor / 200;
         let start = self.explorer_page * 200;
-        let headers = if kinds[self.explorer_cursor] { 2 } else { 1 };
+        let headers = kinds[self.explorer_cursor] + 1;
+        let extra = self
+            .sidebar_groups()
+            .filter(|(_, group)| {
+                let ordinal = crate::objects_ui::SIDEBAR_OBJECT_KINDS
+                    .iter()
+                    .position(|(kind, _)| *kind == group.kind)
+                    .unwrap()
+                    + 2;
+                ordinal < kinds[self.explorer_cursor]
+                    && group.sidebar_expanded
+                    && !matches!(&group.result, Some(Ok(items)) if !items.is_empty())
+            })
+            .count();
         self.explorer_scroll
-            .scroll_to_item(1 + self.explorer_cursor - start + headers);
+            .scroll_to_item(1 + self.explorer_cursor - start + headers + extra);
         cx.notify();
     }
 }

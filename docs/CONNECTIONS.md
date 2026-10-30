@@ -36,7 +36,8 @@ window or block live workspaces in other windows.
 - **New connection** and **Edit** open a temporary profile form. **Save** returns
   to the browser without connecting. **Save & Connect** opens a new owner or switches
   to an existing one; edits do not replace an existing physical session. Use
-  **Current connection → Settings / reconnect** for session replacement.
+   **Reconnect** in the workspace header for session replacement, or **Current
+   connection → Connection settings…** to save profile changes as well.
 - **Remove** requires confirmation and removes only saved configuration. Close the
   profile's retained workspace/form first. Database files, SQL recovery and history
   are retained. Network profiles offer optional system-keyring password deletion;
@@ -111,14 +112,27 @@ open existing files only, even when the draft selects **Create if missing**.
 handshakes expose connection recovery/settings. Clicking the selected engine leaves its fields intact;
 switching engines and back restores that engine's in-memory draft.
 
+Use **Reconnect** in the persistent workspace header, **Connection → Reconnect…**,
+the command palette or **Reconnect…** in an operation-error panel when an idle
+connection closes. It uses the active database and retained credentials without
+changing the saved profile/default database or keyring. Review the form and click
+**Reconnect**. SQL/parameter drafts stay open, and failed attempts can be retried.
+SQLite reconnect opens an existing file, never silently creates a missing one.
+The old session's transaction state is checked first; session-local settings,
+temporary objects and SQLite attachments do not transfer. SQL is never replayed.
+
 If a physical session is unavailable and its transaction state cannot be verified,
-**Connection → Settings / reconnect** offers **Save & Replace session**. Explicitly
+the form offers **Replace session & reconnect** (or **Save & Replace session**
+when opened through **Connection settings…**). Explicitly
 acknowledge that previous outcomes may be unknown. Rowboat rechecks the old session,
 blocks replacement if a live transaction is confirmed, and requires a durable SQL/
 staged-evidence checkpoint before retirement. Session-bound edit proofs become
 detached stale evidence; they cannot silently apply to the replacement. SQL and
 parameters stay open in memory, and no SQL is replayed. Parameters are not written
 to recovery files. Healthy active transactions still require Commit or Rollback.
+Unknown-outcome replacement requires writable recovery storage; an ordinary
+verified reconnect does not require saving local preferences. There is no automatic
+background reconnect or retry of a failed statement.
 
 ## Terminal workflow
 

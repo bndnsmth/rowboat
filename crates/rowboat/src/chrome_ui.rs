@@ -23,6 +23,7 @@ pub enum Command {
     ImportProfiles,
     ExportProfiles,
     Settings,
+    Reconnect,
     Disconnect,
     Move,
     Preferences,
@@ -79,7 +80,8 @@ impl Menu {
                 (Connections, "Manage saved connections…"),
                 (NewConnection, "New connection…"),
                 (Url, "Connect from URL…"),
-                (Settings, "Settings / reconnect…"),
+                (Settings, "Connection settings…"),
+                (Reconnect, "Reconnect…"),
                 (Disconnect, "Disconnect"),
                 (Move, "Move to other window"),
                 (ImportProfiles, "Import connections…"),
@@ -207,6 +209,7 @@ impl Workbench {
             NewConnection | Url | ImportProfiles => idle && self.loaded && !self.has_row_draft(),
             ExportProfiles => idle && self.loaded && !self.state.connections.is_empty(),
             Settings => self.connection_settings_enabled(),
+            Reconnect => self.reconnect_available(),
             Disconnect => clean && connected,
             Move => true,
             Preferences | Recovery => idle && !self.has_row_draft(),
@@ -285,6 +288,7 @@ impl Workbench {
             Settings => {
                 self.connection_settings(w, cx);
             }
+            Reconnect => self.reconnect(w, cx),
             Disconnect => self.disconnect(cx),
             Move => self.request_move(cx),
             Preferences => self.show_preferences(w, cx),
@@ -428,7 +432,11 @@ impl Workbench {
     }
     pub fn compact_header(&self, cx: &mut Context<Self>) -> AnyElement {
         let t = cx.omarchy();
-        let connected = self.database.is_some();
+        let retired = self
+            .database
+            .as_ref()
+            .is_some_and(rowboat_core::Database::is_retired);
+        let connected = self.database.is_some() && !retired;
         let target = self.connection_context_label();
         let name = self
             .profile
@@ -490,6 +498,8 @@ impl Workbench {
                     .child(label(
                         if connected {
                             "Connected"
+                        } else if retired {
+                            "Reconnect required"
                         } else {
                             "Disconnected"
                         },
@@ -519,6 +529,19 @@ impl Workbench {
                         } else {
                             "Transaction unknown"
                         }),
+                )
+            })
+            .when(self.owner.is_some(), |d| {
+                d.child(
+                    action(
+                        "reconnect-workspace",
+                        "Reconnect",
+                        false,
+                        self.reconnect_available(),
+                        cx,
+                        |s, w, cx| s.reconnect(w, cx),
+                    )
+                    .debug_selector(|| "reconnect-workspace".into()),
                 )
             })
             .child(action(

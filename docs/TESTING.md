@@ -114,6 +114,24 @@ last-workspace close/move, satellite commands/rehosting, browser/form cancellati
 and guarded shutdown with writer acknowledgements. These use injected writers and
 disposable recovery/SQLite data, never saved user connections.
 
+`navigation_recovery` covers reconnect entry points, retained SQL/parameters,
+transaction guards, unchanged saved profiles, recovery acknowledgement and no SQL
+replay using disposable SQLite, including failed-attempt retry, missing-file and
+read-only recovery-storage guards. Presentation-only fixtures cover shared paging,
+collapse and loaded-object search. Its opt-in sidebar case uses only the explicit
+MySQL/PostgreSQL fixtures, creates unique schemas, expands real routine catalogs,
+opens/copies definitions, searches by keyboard and rejects stale scope replies.
+A procedure body increments a guard table; inspection must leave that counter at
+zero. Native visual acceptance remains separate; do not restart a user's running
+preview to exercise these changes. A separate opt-in reconnect case verifies new
+server sessions, memory-only credentials and MySQL's active database without
+changing a saved default.
+
+```sh
+cargo test --locked --manifest-path crates/rowboat/editor-tests/Cargo.toml --target-dir target navigation_reconnect -- --test-threads=1
+cargo test --locked --manifest-path crates/rowboat/editor-tests/Cargo.toml --target-dir target navigation_sidebar_live_routines_search_inspection_and_scope_isolation -- --ignored --test-threads=1
+```
+
 ## Disposable server fixtures
 
 Requires rootless Podman and the cached `postgres:18` / `mysql:8.4` images. Scripts

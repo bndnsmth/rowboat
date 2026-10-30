@@ -84,6 +84,22 @@ limits and test procedures are in [FEATURES.md](FEATURES.md) and [TESTING.md](TE
 - **Tools** and **Preferences** remain visible at the bottom of the sidebar.
   Preferences groups appearance, typography, result limits and keyboard overrides; its Save
   footer stays visible while the form scrolls.
+- Expand **Procedures**, **Functions**, **Triggers** or PostgreSQL **Sequences**
+  beneath Tables/Views in the left **Database objects** sidebar. These groups load
+  on demand. Click a routine to inspect/copy its definition; this never calls it.
+  **Filter loaded objects…** searches loaded groups, including routine signatures
+  and trigger parent tables. Reload a group or use the sidebar refresh button to
+  pick up external catalog changes. All groups share the 200-object page controls.
+- If an idle session dies, click **Reconnect** in the workspace header or
+  **Reconnect…** in the error panel. The Connection menu and command palette offer
+  the same action. Review the target/credentials and click **Reconnect** in the
+  form; changes there apply only to this session, not saved profiles or the keyring.
+  SQL and parameter drafts stay open and are never replayed. Finish a known active
+  transaction first. If its outcome cannot be verified, explicitly acknowledge the
+  warning and use **Replace session & reconnect**. Replacement waits for recovery
+  storage to acknowledge preserved evidence; unavailable recovery storage blocks
+  it. Staged edits become detached evidence and are not applied to the new session.
+  Temporary objects and other session-local settings must be recreated manually.
 - **Preferences → Appearance** offers **System (default)** plus 22 embedded stock
   themes. System follows Omarchy live when available, otherwise desktop light/dark.
   Explicit choices persist across launches; Save applies across all windows and

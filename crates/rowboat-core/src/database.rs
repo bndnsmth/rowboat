@@ -157,6 +157,15 @@ impl Database {
     pub fn engine(&self) -> Engine {
         self.inner.engine
     }
+    /// Whether this physical session is already known locally to be retired.
+    /// This performs no I/O and does not claim an idle server is still reachable.
+    /// A currently leased session is not reported closed until cleanup finishes.
+    pub fn is_retired(&self) -> bool {
+        self.inner
+            .session
+            .try_lock()
+            .is_ok_and(|session| matches!(session.conn, Conn::Closed))
+    }
     async fn running(&self) -> Running<'_> {
         self.inner.generation.fetch_add(1, Ordering::AcqRel);
         self.metadata_running().await

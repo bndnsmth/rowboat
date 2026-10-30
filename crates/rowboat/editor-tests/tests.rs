@@ -16,6 +16,7 @@ mod connection_ui;
 mod gui_pass16;
 mod item3_result_tests;
 mod item5_record_tests;
+mod navigation_recovery;
 mod pass13_connections;
 mod pass14_tools;
 mod pass17_preferences;

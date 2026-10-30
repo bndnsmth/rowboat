@@ -12,6 +12,41 @@ use rowboat_core::{
 };
 use std::collections::HashMap;
 
+#[derive(Clone, Copy)]
+pub(crate) enum ExplorerItem<'a> {
+    Relation(&'a TableInfo),
+    Object(&'a rowboat_admin::object_editor::ObjectIdentity),
+}
+pub(crate) enum ExplorerTarget {
+    Relation(rowboat_core::TableRef),
+    Object(rowboat_admin::object_editor::ObjectIdentity),
+}
+impl ExplorerItem<'_> {
+    pub(crate) fn group(self) -> usize {
+        match self {
+            Self::Relation(info) => usize::from(is_view(info)),
+            Self::Object(id) => {
+                2 + crate::objects_ui::SIDEBAR_OBJECT_KINDS
+                    .iter()
+                    .position(|(kind, _)| *kind == id.kind)
+                    .unwrap_or(0)
+            }
+        }
+    }
+    pub(crate) fn label(self) -> String {
+        match self {
+            Self::Relation(info) => info.table.name.clone(),
+            Self::Object(id) => crate::objects_ui::identity_label(id),
+        }
+    }
+    pub(crate) fn target(self) -> ExplorerTarget {
+        match self {
+            Self::Relation(info) => ExplorerTarget::Relation(info.table.clone()),
+            Self::Object(id) => ExplorerTarget::Object(id.clone()),
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct NamespaceState {
     pub snapshot: Option<NamespaceCatalog>,
@@ -681,6 +716,7 @@ impl Workbench {
         self.explorer_page = 0;
         self.explorer_cursor = 0;
         self.explorer_scroll.set_offset(point(px(0.), px(0.)));
+        self.load_next_sidebar_group(cx);
         cx.notify();
     }
     pub fn scope_catalog(&self, mut catalog: Vec<TableInfo>) -> Vec<TableInfo> {
@@ -691,7 +727,7 @@ impl Workbench {
         }
         catalog
     }
-    pub fn explorer_items(&self, cx: &App) -> Vec<&TableInfo> {
+    pub(crate) fn explorer_items(&self, cx: &App) -> Vec<ExplorerItem<'_>> {
         let filter = self.explorer_filter.read(cx).value().to_lowercase();
         let mut items = self
             .catalog
@@ -702,9 +738,38 @@ impl Workbench {
                         .to_lowercase()
                         .contains(&filter)
             })
+            .map(ExplorerItem::Relation)
             .collect::<Vec<_>>();
-        items.sort_by_key(|i| (is_view(i), i.table.name.as_str()));
+        for (_, group) in self
+            .sidebar_groups()
+            .filter(|(_, group)| group.sidebar_expanded)
+        {
+            if let Some(Ok(objects)) = &group.result {
+                items.extend(
+                    objects
+                        .iter()
+                        .filter(|id| {
+                            format!("{}.{}", id.schema, crate::objects_ui::identity_label(id))
+                                .to_lowercase()
+                                .contains(&filter)
+                        })
+                        .map(ExplorerItem::Object),
+                );
+            }
+        }
+        items.sort_by_cached_key(|item| (item.group(), item.label()));
         items
+    }
+    pub(crate) fn open_explorer_target(
+        &mut self,
+        target: ExplorerTarget,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match target {
+            ExplorerTarget::Relation(table) => self.open_table(table, cx),
+            ExplorerTarget::Object(id) => self.inspect_object(id, window, cx),
+        }
     }
     pub fn render_namespace_selector(&self, cx: &mut Context<Self>) -> AnyElement {
         let behavior = self.namespace_behavior();

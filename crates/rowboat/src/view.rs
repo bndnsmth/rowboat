@@ -214,6 +214,8 @@ impl Workbench {
 
     fn render_sidebar(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         use crate::chrome_ui::Command;
+        use crate::namespace_ui::ExplorerItem;
+        self.ensure_sidebar_objects();
         let t = cx.omarchy().clone();
         let navigation = column()
             .flex_shrink_0()
@@ -341,7 +343,14 @@ impl Workbench {
                 .enumerate()
                 .skip(page * 200)
                 .take(200)
-                .filter(|(_, info)| usize::from(crate::namespace_ui::is_view(info)) == index)
+                .filter_map(|(i, item)| match item {
+                    ExplorerItem::Relation(info)
+                        if usize::from(crate::namespace_ui::is_view(info)) == index =>
+                    {
+                        Some((i, *info))
+                    }
+                    _ => None,
+                })
             {
                 let selected = self.page == Page::Table && self.table.as_ref() == Some(&info.table)
                     || self.explorer_cursor == i
@@ -393,8 +402,132 @@ impl Workbench {
                 );
             }
         }
+        for (group_index, group) in self.sidebar_groups() {
+            let (ordinal, (_, title)) = crate::objects_ui::SIDEBAR_OBJECT_KINDS
+                .iter()
+                .enumerate()
+                .find(|(_, (kind, _))| *kind == group.kind)
+                .unwrap();
+            let expanded = group.sidebar_expanded;
+            let count = group
+                .result
+                .as_ref()
+                .and_then(|r| r.as_ref().ok())
+                .map(|items| items.len().to_string())
+                .unwrap_or_else(|| "—".into());
+            let selector = format!("explorer-group-{}", title.to_ascii_lowercase());
+            tables = tables.child(
+                row()
+                    .gap_0()
+                    .flex_shrink_0()
+                    .mt_2()
+                    .child(
+                        action(
+                            ("sidebar-object-group", group_index),
+                            "",
+                            false,
+                            !self.busy && !self.modal_open(),
+                            cx,
+                            move |s, _, cx| s.toggle_sidebar_object_group(group_index, cx),
+                        )
+                        .accessibility_label(format!("{title} ({count})"))
+                        .child(
+                            icon(if expanded {
+                                ui::IconName::ChevronDown
+                            } else {
+                                ui::IconName::ChevronRight
+                            })
+                            .size(px(12.)),
+                        )
+                        .child(div().font_weight(FontWeight::SEMIBOLD).child(*title))
+                        .child(label(count, cx))
+                        .flex_1()
+                        .justify_start()
+                        .debug_selector(move || selector.clone()),
+                    )
+                    .when(group.result.is_some(), |r| {
+                        r.child(icon_action(
+                            SharedString::from(format!("refresh-sidebar-group-{group_index}")),
+                            ui::IconName::RefreshCw,
+                            "Reload object group",
+                            !self.busy && !self.modal_open(),
+                            cx,
+                            move |s, _, cx| s.refresh_sidebar_object_group(group_index, cx),
+                        ))
+                    }),
+            );
+            if !expanded {
+                continue;
+            }
+            let message = match &group.result {
+                None => Some("Loading objects…".to_string()),
+                Some(Err(error)) => Some(format!("Could not load: {error}")),
+                Some(Ok(items)) if items.is_empty() => Some("No objects returned".into()),
+                _ => None,
+            };
+            if let Some(message) = message {
+                tables = tables.child(label(message, cx).pl_5().py_1());
+            }
+            for (i, item) in visible
+                .iter()
+                .enumerate()
+                .skip(page * 200)
+                .take(200)
+                .filter(|(_, item)| item.group() == ordinal + 2)
+            {
+                let ExplorerItem::Object(identity) = item else {
+                    continue;
+                };
+                let selected = self.selected_sidebar_object(identity)
+                    || self.explorer_cursor == i
+                        && self
+                            .explorer_filter
+                            .read(cx)
+                            .focus_handle(cx)
+                            .is_focused(window);
+                let title = crate::objects_ui::identity_label(identity);
+                let target = (*identity).clone();
+                tables = tables.child(
+                    ui::button(("explorer-object", i), "", ButtonVariant::Secondary, cx)
+                        .debug_selector(move || format!("explorer-item-{i}"))
+                        .w_full()
+                        .flex_shrink_0()
+                        .justify_start()
+                        .pl_5()
+                        .h(px(28.))
+                        .text_size(px(13.))
+                        .bg(if selected {
+                            t.selection.opacity(1.)
+                        } else {
+                            transparent_black()
+                        })
+                        .border_l_2()
+                        .border_color(if selected {
+                            t.accent
+                        } else {
+                            transparent_black()
+                        })
+                        .child(icon(ui::IconName::FileCode).text_color(if selected {
+                            t.accent
+                        } else {
+                            t.secondary
+                        }))
+                        .child(ui::with_tooltip(
+                            div()
+                                .id(("explorer-object-name", i))
+                                .min_w_0()
+                                .truncate()
+                                .child(title.clone()),
+                            format!("{}.{}", identity.schema, title),
+                        ))
+                        .on_click(
+                            cx.listener(move |s, _, w, cx| s.inspect_object(target.clone(), w, cx)),
+                        ),
+                );
+            }
+        }
         if self.database.is_some() && visible.is_empty() {
-            tables = tables.child(label("No matching tables or views", cx).p_3());
+            tables = tables.child(label("No matching loaded objects", cx).p_3());
         }
         column()
             .size_full()
@@ -407,12 +540,12 @@ impl Workbench {
                 row()
                     .px_4()
                     .mb_2()
-                    .child(label("Tables & views", cx).font_weight(FontWeight::SEMIBOLD))
+                    .child(label("Database objects", cx).font_weight(FontWeight::SEMIBOLD))
                     .child(div().flex_1())
                     .child(icon_action(
                         "refresh-catalog",
                         ui::IconName::RefreshCw,
-                        "Refresh tables and views",
+                        "Refresh database objects",
                         self.database.is_some() && !self.busy,
                         cx,
                         |s, _, cx| s.refresh_catalog(cx),
@@ -2157,6 +2290,7 @@ impl Workbench {
                         cx,
                         |s, _, cx| {
                             s.form = None;
+                            s.connection_flow.reconnecting = false;
                             cx.notify();
                         },
                     )),
@@ -2366,7 +2500,7 @@ impl Workbench {
                 .child(row().gap_4().child(field("ssh_username","SSH USERNAME",window,cx)).child(field("ssh_identity","IDENTITY FILE (OPTIONAL)",window,cx))).child(label("Uses your SSH agent or identity file and existing trusted known_hosts entries.",cx));
             }
         }
-        if !form.is_file() {
+        if !form.is_file() && !self.connection_flow.reconnecting {
             body = body.child(
                 row()
                     .child(action(
@@ -2417,7 +2551,11 @@ impl Workbench {
             .border_t_1()
             .border_color(t.divider())
             .child(label(
-                if self.loaded {
+                if !self.transaction_known && (!self.loaded || !self.shared.borrow().writable) {
+                    "Recovery storage unavailable; restore it before replacing the session."
+                } else if self.connection_flow.reconnecting {
+                    "Reconnect does not save profile or keyring changes."
+                } else if self.loaded {
                     "Connection profiles are stored locally."
                 } else {
                     "Local state unavailable; profiles cannot be saved."
@@ -2446,34 +2584,42 @@ impl Workbench {
                 )
                 .debug_selector(|| "test-connection".into()),
             )
-            .child(
-                action(
-                    "save-connection",
-                    "Save",
-                    false,
-                    free && self.loaded && !form.keyring_loading && form.file_request.is_none(),
-                    cx,
-                    |s, w, cx| {
-                        if s.prepare_connection_action(w, cx) {
-                            s.save_connection(false, cx);
-                        }
-                    },
+            .when(!self.connection_flow.reconnecting, |d| {
+                d.child(
+                    action(
+                        "save-connection",
+                        "Save",
+                        false,
+                        free && self.loaded && !form.keyring_loading && form.file_request.is_none(),
+                        cx,
+                        |s, w, cx| {
+                            if s.prepare_connection_action(w, cx) {
+                                s.save_connection(false, cx);
+                            }
+                        },
+                    )
+                    .debug_selector(|| "save-connection".into()),
                 )
-                .debug_selector(|| "save-connection".into()),
-            )
+            })
             .child(
                 action(
                     "connect",
-                    if self.transaction_known {
+                    if self.connection_flow.reconnecting && self.transaction_known {
+                        "Reconnect"
+                    } else if self.connection_flow.reconnecting {
+                        "Replace session & reconnect"
+                    } else if self.transaction_known {
                         "Save & Connect"
                     } else {
                         "Save & Replace session"
                     },
                     true,
-                    free && self.loaded
+                    free && (self.loaded
+                        || self.connection_flow.reconnecting && self.transaction_known)
                         && !form.keyring_loading
                         && form.file_request.is_none()
-                        && (self.transaction_known || form.confirm_replace),
+                        && (self.transaction_known
+                            || form.confirm_replace && self.shared.borrow().writable),
                     cx,
                     |s, w, cx| {
                         if !s.prepare_connection_action(w, cx) {
@@ -3015,7 +3161,7 @@ impl Render for Workbench {
                         "up" | "down" | "home" | "end" | "enter"
                     )
                 {
-                    s.explorer_key(&event.keystroke.key, cx);
+                    s.explorer_key(&event.keystroke.key, window, cx);
                     cx.stop_propagation();
                     return;
                 }
@@ -3105,11 +3251,11 @@ impl Render for Workbench {
                     crate::keyboard_ui::modal_focus(true, &s.modal_focus, w, cx)
                 }
             }))
-            .on_action(cx.listener(|s, _: &ExplorerUp, _, cx| s.explorer_key("up", cx)))
-            .on_action(cx.listener(|s, _: &ExplorerDown, _, cx| s.explorer_key("down", cx)))
-            .on_action(cx.listener(|s, _: &ExplorerFirst, _, cx| s.explorer_key("home", cx)))
-            .on_action(cx.listener(|s, _: &ExplorerLast, _, cx| s.explorer_key("end", cx)))
-            .on_action(cx.listener(|s, _: &ExplorerOpen, _, cx| s.explorer_key("enter", cx)))
+            .on_action(cx.listener(|s, _: &ExplorerUp, w, cx| s.explorer_key("up", w, cx)))
+            .on_action(cx.listener(|s, _: &ExplorerDown, w, cx| s.explorer_key("down", w, cx)))
+            .on_action(cx.listener(|s, _: &ExplorerFirst, w, cx| s.explorer_key("home", w, cx)))
+            .on_action(cx.listener(|s, _: &ExplorerLast, w, cx| s.explorer_key("end", w, cx)))
+            .on_action(cx.listener(|s, _: &ExplorerOpen, w, cx| s.explorer_key("enter", w, cx)))
             .on_action(cx.listener(|s, _: &NextSnippet, w, cx| {
                 if !s.advance_snippet(w, cx) {
                     cx.propagate();
@@ -3259,6 +3405,7 @@ impl Render for Workbench {
                 }
                 if !s.busy {
                     s.form = None;
+                    s.connection_flow.reconnecting = false;
                     s.row_editor = None;
                 }
                 s.quick_open = false;
@@ -3447,6 +3594,19 @@ impl Render for Workbench {
                                     .child("Unable to complete operation"),
                             )
                             .child(div().flex_1())
+                            .when(self.owner.is_some(), |d| {
+                                d.child(
+                                    action(
+                                        "reconnect-error",
+                                        "Reconnect…",
+                                        false,
+                                        self.reconnect_available(),
+                                        cx,
+                                        |s, w, cx| s.reconnect(w, cx),
+                                    )
+                                    .debug_selector(|| "reconnect-error".into()),
+                                )
+                            })
                             .child(action(
                                 "dismiss-error",
                                 "✕",

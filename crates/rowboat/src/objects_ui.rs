@@ -23,22 +23,24 @@ use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Default)]
 pub struct ObjectState {
+    scope: Option<String>,
     schema_page: usize,
     route: Option<Route>,
     schemas: Vec<String>,
     loaded: bool,
     error: Option<String>,
     request: Option<uuid::Uuid>,
-    groups: Vec<Group>,
+    pub(crate) groups: Vec<Group>,
     loading: Option<(String, ObjectKind)>,
     closed: BTreeSet<String>,
     pub dialog: Option<DefinitionDialog>,
 }
-struct Group {
+pub(crate) struct Group {
     page: usize,
-    schema: String,
-    kind: ObjectKind,
-    result: Option<Result<Vec<ObjectIdentity>, String>>,
+    pub(crate) schema: String,
+    pub(crate) kind: ObjectKind,
+    pub(crate) result: Option<Result<Vec<ObjectIdentity>, String>>,
+    pub(crate) sidebar_expanded: bool,
 }
 pub struct DefinitionDialog {
     id: uuid::Uuid,
@@ -98,7 +100,27 @@ fn kinds(engine: Engine) -> Vec<ObjectKind> {
     .filter(|kind| rowboat_admin::providers::supported_object_kinds(engine).contains(kind))
     .collect()
 }
-fn identity_label(id: &ObjectIdentity) -> String {
+pub(crate) const SIDEBAR_OBJECT_KINDS: &[(ObjectKind, &str)] = &[
+    (ObjectKind::Procedure, "Procedures"),
+    (ObjectKind::Function, "Functions"),
+    (ObjectKind::Trigger, "Triggers"),
+    (ObjectKind::Sequence, "Sequences"),
+];
+fn groups_for(engine: Engine, schemas: &[String]) -> Vec<Group> {
+    schemas
+        .iter()
+        .flat_map(|schema| {
+            kinds(engine).into_iter().map(move |kind| Group {
+                page: 0,
+                schema: schema.clone(),
+                kind,
+                result: None,
+                sidebar_expanded: false,
+            })
+        })
+        .collect()
+}
+pub(crate) fn identity_label(id: &ObjectIdentity) -> String {
     format!(
         "{}{}{}",
         id.name,
@@ -235,6 +257,101 @@ async fn apply_object(db: &Database, edit: &ObjectEdit) -> Result<String, String
     }
 }
 impl Workbench {
+    /// Initialize from the already observed namespace, without issuing catalog SQL
+    /// during rendering. Object groups load only when explicitly expanded/refreshed.
+    pub(crate) fn ensure_sidebar_objects(&mut self) {
+        let Some(engine) = self.profile.as_ref().map(|p| p.engine) else {
+            return;
+        };
+        if !self.namespace.known || self.database.is_none() || kinds(engine).is_empty() {
+            return;
+        }
+        let Some(scope) = self.namespace_scope().map(str::to_owned) else {
+            return;
+        };
+        if self.objects.route == Some(self.tx.route)
+            && self.objects.scope.as_deref() == Some(&scope)
+        {
+            return;
+        }
+        let schemas = vec![scope.clone()];
+        self.objects = ObjectState {
+            scope: Some(scope),
+            route: Some(self.tx.route),
+            groups: groups_for(engine, &schemas),
+            schemas,
+            loaded: true,
+            ..Default::default()
+        };
+    }
+    pub(crate) fn sidebar_groups(&self) -> impl Iterator<Item = (usize, &Group)> {
+        SIDEBAR_OBJECT_KINDS.iter().filter_map(|(kind, _)| {
+            self.objects.groups.iter().enumerate().find(|(_, group)| {
+                self.namespace.known
+                    && self.objects.route == Some(self.tx.route)
+                    && Some(group.schema.as_str()) == self.namespace_scope()
+                    && *kind == group.kind
+            })
+        })
+    }
+    pub(crate) fn toggle_sidebar_object_group(&mut self, index: usize, cx: &mut Context<Self>) {
+        if self.busy || self.modal_open() || self.close_requested || !self.namespace.known {
+            return;
+        }
+        let Some((_, group)) = self.sidebar_groups().find(|(i, _)| *i == index) else {
+            return;
+        };
+        let expanded = !group.sidebar_expanded;
+        self.objects.groups[index].sidebar_expanded = expanded;
+        self.explorer_cursor = 0;
+        self.explorer_page = 0;
+        self.load_next_sidebar_group(cx);
+        cx.notify();
+    }
+    pub(crate) fn refresh_sidebar_object_group(&mut self, index: usize, cx: &mut Context<Self>) {
+        if self.busy
+            || self.modal_open()
+            || self.close_requested
+            || !self.namespace.known
+            || !self.sidebar_groups().any(|(i, _)| i == index)
+        {
+            return;
+        }
+        let group = &mut self.objects.groups[index];
+        group.sidebar_expanded = true;
+        group.result = None;
+        self.load_next_sidebar_group(cx);
+    }
+    pub(crate) fn expand_loaded_sidebar_groups(&mut self) {
+        for group in &mut self.objects.groups {
+            if group.result.is_some() {
+                group.sidebar_expanded = true;
+            }
+        }
+    }
+    pub(crate) fn invalidate_sidebar_objects(&mut self) {
+        for group in &mut self.objects.groups {
+            group.result = None;
+        }
+    }
+    pub(crate) fn load_next_sidebar_group(&mut self, cx: &mut Context<Self>) {
+        if self.busy || self.has_extension_dialog() || self.close_requested {
+            return;
+        }
+        let index = self
+            .sidebar_groups()
+            .find(|(_, group)| group.sidebar_expanded && group.result.is_none())
+            .map(|(i, _)| i);
+        if let Some(index) = index {
+            self.load_object_group(index, cx);
+        }
+    }
+    pub(crate) fn selected_sidebar_object(&self, identity: &ObjectIdentity) -> bool {
+        self.objects
+            .dialog
+            .as_ref()
+            .is_some_and(|d| d.route == self.tx.route && d.identity == *identity)
+    }
     pub fn show_objects_page(&mut self, cx: &mut Context<Self>) {
         if !self.require_admin(rowboat_admin::providers::Operation::Namespaces, cx) {
             return;
@@ -260,14 +377,15 @@ impl Workbench {
             return;
         };
         let request = uuid::Uuid::new_v4();
+        let scope = self.namespace_scope().map(str::to_owned);
         self.objects = ObjectState {
+            scope: scope.clone(),
             route: Some(self.tx.route),
             request: Some(request),
             ..Default::default()
         };
         self.busy = true;
         let tx = self.tx.clone();
-        let scope = self.namespace_scope().map(str::to_owned);
         self.runtime.spawn(async move {
             let result = async {
                 let snapshot = db.namespace_catalog(scope.as_deref()).await?;
@@ -323,7 +441,7 @@ impl Workbench {
         });
         cx.notify();
     }
-    fn inspect_object(
+    pub(crate) fn inspect_object(
         &mut self,
         identity: ObjectIdentity,
         window: &mut Window,
@@ -417,17 +535,7 @@ impl Workbench {
                     Ok(schemas) => {
                         self.objects.closed = schemas.iter().skip(1).cloned().collect();
                         let engine = self.profile.as_ref().unwrap().engine;
-                        self.objects.groups = schemas
-                            .iter()
-                            .flat_map(|schema| {
-                                kinds(engine).into_iter().map(move |kind| Group {
-                                    page: 0,
-                                    schema: schema.clone(),
-                                    kind,
-                                    result: None,
-                                })
-                            })
-                            .collect();
+                        self.objects.groups = groups_for(engine, &schemas);
                         self.objects.schemas = schemas;
                     }
                     Err(e) => self.objects.error = Some(e),
@@ -453,6 +561,7 @@ impl Workbench {
                     group.result = Some(result);
                 }
                 self.objects.loading = None;
+                self.load_next_sidebar_group(cx);
             }
             ObjectEvent::Inspected { id, result } => {
                 if let Some(d) = &mut self.objects.dialog
@@ -896,19 +1005,24 @@ impl Workbench {
             body = body
                 .child(
                     row()
-                        .child(action(
-                            "copy-full-definition",
-                            "Copy full definition",
-                            false,
-                            true,
-                            cx,
-                            {
-                                let text = definition.clone();
-                                move |_, _, cx| {
-                                    cx.write_to_clipboard(ClipboardItem::new_string(text.clone()))
-                                }
-                            },
-                        ))
+                        .child(
+                            action(
+                                "copy-full-definition",
+                                "Copy full definition",
+                                false,
+                                true,
+                                cx,
+                                {
+                                    let text = definition.clone();
+                                    move |_, _, cx| {
+                                        cx.write_to_clipboard(ClipboardItem::new_string(
+                                            text.clone(),
+                                        ))
+                                    }
+                                },
+                            )
+                            .debug_selector(|| "copy-full-definition".into()),
+                        )
                         .child(action(
                             "copy-object-catalog",
                             "Copy catalog evidence",

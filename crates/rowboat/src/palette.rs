@@ -68,7 +68,7 @@ impl Command {
             (Self::SaveSqlFileAs, "Save SQL file as a new path…"),
             (Self::NewConnection, "New saved connection…"),
             (Self::Connections, "Manage saved connections…"),
-            (Self::Reconnect, "Connection settings / reconnect…"),
+            (Self::Reconnect, "Reconnect current workspace…"),
             (Self::Disconnect, "Disconnect this workspace"),
             (Self::RefreshCatalog, "Refresh database catalog"),
             (Self::Cancel, "Cancel running query"),
@@ -193,7 +193,7 @@ impl Workbench {
             Command::RunForEditing => self.run_for_editing_enabled(),
             Command::Run => clean && connected && self.page == Page::Query,
             Command::Cancel => self.busy && connected && !self.transfer_running,
-            Command::Reconnect => self.connection_settings_enabled(),
+            Command::Reconnect => self.reconnect_available(),
             Command::Disconnect => {
                 clean
                     && self.transaction_known
@@ -442,7 +442,7 @@ impl Workbench {
                 Command::Connections => {
                     self.choose_menu(crate::chrome_ui::Command::Connections, window, cx)
                 }
-                Command::Reconnect => self.connection_settings(window, cx),
+                Command::Reconnect => self.reconnect(window, cx),
                 Command::Disconnect => self.disconnect(cx),
                 Command::RefreshCatalog => self.refresh_catalog(cx),
                 Command::Cancel => self.cancel(cx),
